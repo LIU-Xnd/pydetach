@@ -31,7 +31,14 @@ transcriptomics into pseudo-single-cell spots and cell-type mapping leveraging p
 without reliance on imaging information.
 
 
-## Requirements
+## Installation
+
+### Executable
+
+An executable is available in [Release](https://github.com/LIU-Xnd/pydetach/releases).
+
+### PyPI module
+
 It could be simply
 installed by `pip install pydetach` (Python version: 3.12).
 
@@ -61,8 +68,16 @@ deTACH now is packed as a commandline module:
 See help:
 
 ```
+$ detach -h
+```
+
+if you've downloaded the executable, or
+
+```
 $ python -m pydetach -h
 ```
+
+if you've installed the Python module.
 
 If you are interested in using pydetach as a python package, we recommend using pydetach.recipe module.
 See docstring therein.
