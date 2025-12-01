@@ -1,0 +1,25 @@
+[project]
+name = "pydetach"
+version = "1.0.1"
+description = "DeTACH: Detaching spatial Trascriptomics into Annotated Cells with High confidence"
+authors = [
+    {name = "Xindong Liu",email = "liuxindong@big.ac.cn"}
+]
+license = "GPL3"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy (>=1.26.4,<1.27.0)",
+    "pandas (>=2.2.3,<2.3.0)",
+    "scanpy (>=1.10.4,<1.11.0)",
+    "scikit-learn (>=1.5.2,<1.6.0)",
+    "scipy (>=1.14.1,<1.15.0)",
+    "matplotlib (>=3.9.2,<3.10.0)",
+    "seaborn (>=0.13.2,<0.14.0)",
+    "dill (>=0.3.8,<0.4.0)",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
