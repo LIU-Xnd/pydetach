@@ -1,7 +1,7 @@
 [project]
 name = "pydetach"
 version = "1.0.1"
-description = "DeTACH: Detaching spatial Trascriptomics into Annotated Cells with High confidence"
+description = "deTACH: Detaching spatial Trascriptomics into Annotated Cells with High confidence"
 authors = [
     {name = "Xindong Liu",email = "liuxindong@big.ac.cn"}
 ]
