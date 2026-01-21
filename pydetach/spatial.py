@@ -51,12 +51,12 @@ def spatial_distances(
     sp_adata: _AnnData,
     max_spatial_distance: _NumberType,
     p_norm: _NumberType = 2,
-    verbose: bool = True,
+    verbose: bool = False,
 ) -> None:
     """Computes spatial distances matrix in csr_matrix format. Saved in place.
     
     Might take large RAM. One way to ease is to split AnnData into small chunks
-    (using pytacs.chunk_spatial),
+    (using chunk_spatial),
     and compute seperately the spatial_distances. Finally you can sc.concat
     them with pairwise=True.
     
@@ -66,13 +66,38 @@ def spatial_distances(
     ckdtree_spatial = _cKDTree(sp_adata.obsm["spatial"])
     if verbose:
         _tqdm.write("Building spatial distances, might take up large memory..")
-    distances_propagation = _csr_matrix(
-        ckdtree_spatial.sparse_distance_matrix(
-            other=ckdtree_spatial,
-            max_distance=max_spatial_distance,
-            p=p_norm,
+    # Mem-friendly building spatial graph
+    rows, cols, data = [], [], []
+    if verbose:
+        itor_ = enumerate(_tqdm(sp_adata.obsm['spatial']))
+    else:
+        itor_ = enumerate(sp_adata.obsm['spatial'])
+    for i, x in itor_:
+        ix = ckdtree_spatial.query_ball_point(
+            x,
+            r=max_spatial_distance,
+            p=p_norm,    
         )
-    )
+        for j in ix:
+            if j > i:
+                d = _np.linalg.norm(x - sp_adata.obsm['spatial'][j,:], ord=p_norm)
+                rows.append(i)
+                cols.append(j)
+                data.append(d)
+    distances_propagation: _csr_matrix = _coo_matrix(
+        (data, (rows, cols)),
+        shape=(sp_adata.shape[0], sp_adata.shape[0])
+    ).tocsr()
+    del data
+    del rows
+    del cols
+    # distances_propagation = _csr_matrix(
+    #     ckdtree_spatial.sparse_distance_matrix(
+    #         other=ckdtree_spatial,
+    #         max_distance=max_spatial_distance,
+    #         p=p_norm,
+    #     )
+    # )
     distances_propagation.eliminate_zeros()
     sp_adata.obsp["spatial_distances"] = _csr_matrix(distances_propagation)
     sp_adata.uns["max_spatial_distance"] = max_spatial_distance
@@ -80,268 +105,6 @@ def spatial_distances(
         _tqdm.write(
             'Saved in .obsp["spatial_distances"]. Related param saved in .uns["max_spatial_distance"]'
         )
-    return
-
-def spatial_distances_sequential(
-    sp_adata: _AnnData,
-    max_spatial_distance: _NumberType,
-    p_norm: _NumberType = 2,
-    n_chunks: int = 9,
-    verbose: bool = True,
-) -> None:
-    """EXPERIMENTAL: Compute spatial distances by chunks to save memory. Might slightly differ from expected results.
-
-    WARNING: In practical tests, this method is still memory-intense. Use with care!
-    
-    Computes spatial distances matrix in csr_matrix format. Saved in place.
-    """
-    indices_chunks = _chunk_spatial(coords=sp_adata.obsm['spatial'], n_chunks=n_chunks)
-    dummy_adatas = [
-        _sc.AnnData(
-            X=_csr_matrix((len(ixs), sp_adata.shape[1])),
-            obsm={'spatial': sp_adata.obsm['spatial'][ixs, :]},
-        ) for ixs in indices_chunks
-    ]
-    for i, dummy in enumerate(dummy_adatas):
-        if verbose:
-            _tqdm.write(f'Processing chunk {i+1} ..')
-        spatial_distances(dummy, max_spatial_distance=max_spatial_distance, p_norm=p_norm, verbose=verbose)
-    adata_final = _sc.concat(dummy_adatas, pairwise=True)
-    sp_adata.obsp['spatial_distances'] = adata_final.obsp['spatial_distances']
-    return
-
-def spatial_distances_sequential_lossless(
-    sp_adata: _AnnData,
-    max_spatial_distance: _NumberType,
-    p_norm: _NumberType = 2,
-    n_chunks: int = 9,
-    verbose: bool = True,
-) -> None:
-    """EXPERIMENTAL: Compute spatial distances by chunks to save memory, with boundary-aware correction.
-    
-    Computes spatial distances matrix in csr_matrix format. Saved in place.
-    """
-    indices_chunks = _chunk_spatial(coords=sp_adata.obsm['spatial'], n_chunks=n_chunks)
-    dummy_adatas = [
-        _sc.AnnData(
-            X=_csr_matrix((len(ixs), sp_adata.shape[1])),
-            obsm={'spatial': sp_adata.obsm['spatial'][ixs, :]},
-        ) for ixs in indices_chunks
-    ]
-    for i, dummy in enumerate(dummy_adatas):
-        if verbose:
-            _tqdm.write(f'Processing chunk {i+1} ..')
-        dummy.obs_names = sp_adata.obs_names[indices_chunks[i]]  # track row mapping
-        spatial_distances(dummy, max_spatial_distance=max_spatial_distance, p_norm=p_norm, verbose=verbose)
-    adata_final = _sc.concat(dummy_adatas, pairwise=True)
-
-    # Edge-case fix: cross-boundary distances
-    if verbose:
-        _tqdm.write('Processing cross-chunk boundary distances ..')
-    # Assume: indices_chunks is a list of index arrays for each chunk
-    rows, cols, dists = [], [], []
-    n_chunks = len(indices_chunks)
-
-    for i in range(n_chunks):
-        ixs_i = indices_chunks[i]
-        coords_i = sp_adata.obsm['spatial'][ixs_i]
-        tree_i = _cKDTree(coords_i)
-
-        for j in range(i + 1, n_chunks):  # only later chunks to avoid duplication
-            ixs_j = indices_chunks[j]
-            coords_j = sp_adata.obsm['spatial'][ixs_j]
-            tree_j = _cKDTree(coords_j)
-
-            # Query i-points against j-tree
-            neighbors_ij = tree_j.query_ball_point(coords_i, r=max_spatial_distance, p=p_norm)
-
-            for local_i, nbrs in enumerate(neighbors_ij):
-                global_i = ixs_i[local_i]
-                for local_j in nbrs:
-                    global_j = ixs_j[local_j]
-                    dist = _np.linalg.norm(sp_adata.obsm['spatial'][global_i] - sp_adata.obsm['spatial'][global_j], ord=p_norm)
-                    rows.append(global_i)
-                    cols.append(global_j)
-                    dists.append(dist)
-                    # Optional: also store (global_j, global_i) if symmetric
-
-    # Construct sparse matrix from inter-chunk (boundary) distances
-    boundary_matrix = _csr_matrix((dists, (rows, cols)), shape=(sp_adata.n_obs, sp_adata.n_obs))
-    boundary_matrix.eliminate_zeros()
-    final_matrix = adata_final.obsp['spatial_distances'].maximum(boundary_matrix)
-    sp_adata.obsp['spatial_distances'] = final_matrix
-    sp_adata.uns['max_spatial_distance'] = max_spatial_distance
-    return
-
-
-def spatial_distances_knn(
-    sp_adata: _AnnData,
-    n_neighbors: int = 15,
-    p_norm: _NumberType = 2,
-    verbose: bool = True,
-) -> None:
-    """Computes spatial distances matrix in csr_matrix format using kNN. Saved in place."""
-    if verbose:
-        _tqdm.write('Loading spatial coordinates from .obsm["spatial"]..')
-    ckdtree_spatial = _cKDTree(sp_adata.obsm["spatial"])
-    if verbose:
-        _tqdm.write("Building spatial distances using kNN, might take up large memory..")
-    distances, indices = ckdtree_spatial.query(
-        sp_adata.obsm['spatial'],
-        k=n_neighbors+1,
-        p=p_norm,
-    )
-    distances = distances[:, 1:]  # excluding self
-    indices = indices[:, 1:]
-
-    rows = _np.repeat(_np.arange(sp_adata.shape[0]), n_neighbors)
-    cols = indices.flatten()
-    data = distances.flatten()
-
-    distances_propagation = _csr_matrix(
-        (data, (rows, cols)),
-        shape=(sp_adata.shape[0], sp_adata.shape[0]),
-    )
-    distances_propagation.eliminate_zeros()
-    sp_adata.obsp["spatial_distances_knn"] = _csr_matrix(distances_propagation)
-    sp_adata.uns["k_spatial_distance_knn"] = n_neighbors
-    if verbose:
-        _tqdm.write(
-            'Saved in .obsp["spatial_distances_knn"]. Related param saved in .uns["k_spatial_distance_knn"]'
-        )
-    return
-
-def spatial_distances_knn_sequential(
-    sp_adata: _AnnData,
-    n_neighbors: int = 15,
-    p_norm: _NumberType = 2,
-    n_chunks: int = 9,
-    verbose: bool = True,
-) -> None:
-    """EXPERIMENTAL: Compute spatial distances using kNN by chunks to save memory.
-    
-    Computes spatial distances matrix in csr_matrix format using kNN. Saved in place.
-    """
-    indices_chunks = _chunk_spatial(coords=sp_adata.obsm['spatial'], n_chunks=n_chunks)
-    dummy_adatas = [
-        _sc.AnnData(
-            X=_csr_matrix((len(ixs), sp_adata.shape[1])),
-            obsm={'spatial': sp_adata.obsm['spatial'][ixs, :]},
-        ) for ixs in indices_chunks
-    ]
-    for i, dummy in enumerate(dummy_adatas):
-        if verbose:
-            _tqdm.write(f'Processing chunk {i+1} ..')
-        spatial_distances_knn(dummy, n_neighbors=n_neighbors, p_norm=p_norm, verbose=verbose)
-    adata_final = _sc.concat(dummy_adatas, pairwise=True)
-    sp_adata.obsp['spatial_distances_knn'] = adata_final.obsp['spatial_distances_knn']
-    sp_adata.uns['k_spatial_distance_knn'] = n_neighbors
-    return
-
-def spatial_connectivities_knn(
-    sp_adata: _AnnData,
-    p_norm: _NumberType = 2,
-    verbose: bool = True,
-) -> None:
-    """Computes spatial connectivities matrix (UMAP kernel) in csr_matrix format using kNN. Saved in place."""
-    if verbose:
-        _tqdm.write('Loading spatial distances (knn) from .obsp["spatial_distances_knn"]..')
-    if "spatial_distances_knn" not in sp_adata.obsp:
-        raise ValueError(
-            'Please compute spatial distances using `spatial_distances_knn` first.'
-        )
-    if "k_spatial_distance_knn" not in sp_adata.uns:
-        raise ValueError(
-            'Please compute spatial distances using `spatial_distances_knn` first.'
-        )
-    distances = sp_adata.obsp["spatial_distances_knn"].copy()
-    n_neighbors: int = sp_adata.uns["k_spatial_distance_knn"]
-    N = distances.shape[0]
-    rows = []
-    cols = []
-    vals = []
-
-    rhos = _np.zeros(N)
-    sigmas = _np.zeros(N)
-    target = _np.log2(n_neighbors)
-
-    if verbose:
-        itor_ = _tqdm(range(N), desc="Computing connectivities", ncols=60)
-    else:
-        itor_ = range(N)
-    for i in itor_:
-        start = distances.indptr[i]
-        end = distances.indptr[i + 1]
-        indices_i = distances.indices[start:end]
-        distances_i = distances.data[start:end]
-
-        pos_dists = distances_i[distances_i > 0]
-        rhos[i] = pos_dists.min() if len(pos_dists) > 0 else 0.0
-
-        lo, hi = 1e-5, 1000.0
-        for _ in range(64):
-            mid = (lo + hi) / 2.0
-            psum = _np.sum(_np.exp(-(_np.maximum(0, distances_i - rhos[i]) / mid)))
-            if abs(psum - target) < 1e-5:
-                break
-            if psum > target:
-                hi = mid
-            else:
-                lo = mid
-        sigmas[i] = mid
-
-        for j, dist_ij in zip(indices_i, distances_i):
-            val = _np.exp(-max(dist_ij - rhos[i], 0) / sigmas[i])
-            rows.append(i)
-            cols.append(j)
-            vals.append(val)
-    
-    P = _csr_matrix(
-        (vals, (rows, cols)),
-        shape=(N, N),
-    )
-
-    C = P + P.T - P.multiply(P.T)
-    sp_adata.obsp["spatial_connectivities_knn"] = C.tocsr()
-    return
-
-def combined_connectivities(
-    sp_adata: _AnnData,
-    weight_spatial: float = 0.5,
-    key_pca_connectivities: str = 'connectivities',
-    key_spatial_connectivities: str = 'spatial_connectivities_knn',
-    key_added: str = 'combined_connectivities',
-    verbose: bool = True,
-) -> None:
-    """Combines PCA connectivities and spatial connectivities into a single matrix.
-
-    Args:
-        sp_adata (_AnnData): AnnData object containing PCA connectivities and spatial connectivities.
-        key_pca_connectivities (str): Key for PCA connectivities in .obsp.
-        key_spatial_connectivities (str): Key for spatial connectivities in .obsp.
-        key_added (str): Key to store the combined connectivities in .obsp.
-        verbose (bool): Whether to print progress messages.
-    """
-    if verbose:
-        _tqdm.write('Combining PCA and spatial connectivities..')
-    if key_pca_connectivities not in sp_adata.obsp:
-        raise ValueError(f'Key "{key_pca_connectivities}" not found in .obsp.')
-    if key_spatial_connectivities not in sp_adata.obsp:
-        raise ValueError(f'Key "{key_spatial_connectivities}" not found in .obsp.')
-    assert 0.0 <= weight_spatial <= 1.0
-
-    pca_conn = sp_adata.obsp[key_pca_connectivities]
-    spatial_conn = sp_adata.obsp[key_spatial_connectivities]
-
-    combined_conn = (1-weight_spatial) * pca_conn + weight_spatial * spatial_conn
-    combined_conn.eliminate_zeros()
-    
-    sp_adata.obsp[key_added] = combined_conn.tocsr()
-    sp_adata.uns['neighbors_'+key_added] = sp_adata.uns['neighbors'].copy()
-    sp_adata.uns['neighbors_'+key_added]['connectivities_key'] = key_added
-    if verbose:
-        _tqdm.write(f'Saved combined connectivities in .obsp["{key_added}"].')
-        _tqdm.write(f'To make this take effect, use neighbors_key="neighbors_{key_added}" when calling sc.tl.umap, and use obsp="{key_added}" when calling sc.tl.leiden')
     return
 
 

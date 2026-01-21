@@ -1,6 +1,8 @@
 import numpy as _np
-from scipy.sparse import issparse as _issparse
-from scipy.sparse import eye as _eye
+from scipy.sparse import (
+    issparse as _issparse,
+    eye as _eye,
+)
 from tqdm import tqdm as _tqdm
 import pandas as _pd
 import os as _os
@@ -8,11 +10,9 @@ import os as _os
 from .types import (
     _AnnData,
     _NDArray,
+    _1DArrayType,
     _Nx2ArrayType,
-    _UndefinedType,
-    _UNDEFINED,
     _Iterable,
-    _matrix,
     _csr_matrix,
     _coo_matrix,
     _dok_matrix,
@@ -21,13 +21,15 @@ from .types import (
 
 
 # >>> Reshaping operations
-def find_indices(lst1: _Iterable, lst2: _Iterable) -> _NDArray[_np.int_]:
-    """Returns an array of indices where elements of lst1 appear in lst2, or -1 if not found.
+def arg_2to1(lst1: _Iterable, lst2: _Iterable) -> _NDArray:
+    """Returns an array of indices ix_2to1, such that:
+    lst2[ix_2to1] == lst1, except that absent elements are replaced with
+    lst2[-1].
 
     Example:
         ls1 = np.array([2,4,5,6,7])
         ls2 = np.array([5,4,7,3,2,0])
-        iloc_2to1 = find_indices(ls1, ls2)
+        iloc_2to1 = arg_2to1(ls1, ls2)
         # We have
         ls2[iloc_2to1] == np.array([2,4,5,0,7])
     """
@@ -38,12 +40,12 @@ def find_indices(lst1: _Iterable, lst2: _Iterable) -> _NDArray[_np.int_]:
 
 
 def rearrange_count_matrix(
-    X: _csr_matrix | _coo_matrix | _np.ndarray,
-    genes_X: _NDArray[_np.str_],
-    genes_target: _NDArray[_np.str_],
+    X: _csr_matrix | _coo_matrix | _NDArray,
+    genes_X:      _1DArrayType,
+    genes_target: _1DArrayType,
 ) -> _csr_matrix:
     """Reshape X to match genes_target, setting absent gene counts to 0."""
-    idx_subgenes = find_indices(lst1=genes_target, lst2=genes_X)
+    idx_subgenes = arg_2to1(lst1=genes_target, lst2=genes_X)
     X_rearranged = _lil_matrix(
         (X.shape[0], len(genes_target)),
     ).astype(X.dtype)
@@ -55,16 +57,18 @@ def rearrange_count_matrix(
 def reinit_index(
     adata: _AnnData,
     colname_to_save_oldIndex: str = "old_index",
+    save_oldIndex: bool = False,
 ) -> None:
-    """Save old index as a col of obs and re-index with integers (string type) (only apply
-     for .obs).
+    """Re-index adata.obs with integers (string type).
+    If save_oldIndex is True, save old index as a col of obs.
     Inplace operation."""
-    while colname_to_save_oldIndex in adata.obs_keys():
-        print(
-            f"Warning: {colname_to_save_oldIndex} already in obs! New name: {colname_to_save_oldIndex}_copy."
-        )
-        colname_to_save_oldIndex += "_copy"
-    adata.obs[colname_to_save_oldIndex] = adata.obs.index.values
+    if save_oldIndex:
+        while colname_to_save_oldIndex in adata.obs_keys():
+            print(
+                f"Warning: {colname_to_save_oldIndex} already in obs! New name: {colname_to_save_oldIndex}_copy."
+            )
+            colname_to_save_oldIndex += "_copy"
+        adata.obs[colname_to_save_oldIndex] = adata.obs.index.values
     adata.obs.index = _np.arange(adata.obs.shape[0]).astype(str)
     return
 
@@ -73,10 +77,10 @@ def reinit_index(
 
 
 def radial_basis_function(
-    location_vectors: _np.ndarray,
-    centroid_vector: _np.ndarray | None = None,
+    location_vectors: _NDArray,
+    centroid_vector:  _NDArray | None = None,
     scale: float = 1.0,
-) -> _NDArray[_np.float_]:
+) -> _1DArrayType:
     """
     Computes the values of a multivariate Gaussian radial basis function (RBF) for a batch of vectors.
 
@@ -103,14 +107,14 @@ def radial_basis_function(
 
 
 def to_array(
-    X: _np.ndarray | _csr_matrix | _dok_matrix | _matrix,
+    X: _NDArray | _csr_matrix | _dok_matrix,
     squeeze: bool = False,
-) -> _np.ndarray:
+) -> _NDArray:
     """
     Converts various matrix types (NumPy array, SciPy sparse matrices, or NumPy matrix) into a NumPy array.
 
     Args:
-        X (np.ndarray | csr_matrix | dok_matrix | np.matrix): Input matrix to be converted.
+        X (np.ndarray | csr_matrix | dok_matrix): Input matrix to be converted.
         squeeze (bool, optional): If True, the output array is flattened. Defaults to False.
 
     Returns:
@@ -118,18 +122,16 @@ def to_array(
     """
     if _issparse(X):
         X = X.toarray()
-    elif isinstance(X, _matrix):
-        X = _np.asarray(X)
     if squeeze:
         X = X.ravel().copy()
     return X
 
 
 def truncate_top_n(
-    arr: _np.ndarray,
+    arr: _1DArrayType,
     n_top: int,
     return_bools: bool = False,
-) -> _np.ndarray:
+) -> _1DArrayType:
     """
     Truncates the input array by setting all but the top `n_top` values to 0.
 
@@ -178,10 +180,10 @@ def normalize_csr(mat_csr: _csr_matrix) -> _csr_matrix:
     - The function assumes that the input matrix is in CSR format and efficiently
       performs the normalization without converting the matrix to a dense format.
     """
-    row_sums: _np.ndarray = to_array(mat_csr.sum(axis=1), squeeze=True)
+    row_sums: _NDArray = to_array(mat_csr.sum(axis=1), squeeze=True)
     row_sums[row_sums == 0.0] = 1.0
     row_inv = 1.0 / row_sums
-    diag_row_inv = _eye(
+    diag_row_inv: _csr_matrix = _eye(
         m=mat_csr.shape[0],
         format="csr",
     )
@@ -192,7 +194,7 @@ def normalize_csr(mat_csr: _csr_matrix) -> _csr_matrix:
 def prune_csr_per_row(
     csr_mat: _csr_matrix,
     prune_proportion: float = 0.5,
-    tqdm_verbose: bool = True,
+    tqdm_verbose: bool = False,
 ) -> _csr_matrix:
     """
     Deprecated.
@@ -207,7 +209,6 @@ def prune_csr_per_row(
         itor_ = _tqdm(
             range(csr_mat.shape[0]),
             desc=f"Pruning off {prune_proportion:.1%} nodes",
-            ncols=60,
         )
     else:
         itor_ = range(csr_mat.shape[0])
@@ -241,7 +242,7 @@ def prune_csr_per_row(
 def prune_csr_per_row_cum_prob(
     csr_mat: _csr_matrix,
     cum_prob_keep: float = 0.5,
-    tqdm_verbose: bool = True,
+    tqdm_verbose: bool = False,
 ) -> _csr_matrix:
     """
     DEPRECATED.
@@ -259,7 +260,6 @@ def prune_csr_per_row_cum_prob(
         itor_ = _tqdm(
             range(csr_mat.shape[0]),
             desc=f"Pruning off nodes",
-            ncols=60,
         )
     else:
         itor_ = range(csr_mat.shape[0])
@@ -294,7 +294,7 @@ def prune_csr_per_row_cum_prob(
 def prune_csr_per_row_infl_point(
     csr_mat: _csr_matrix,
     min_points_to_keep: int = 1,
-    tqdm_verbose: bool = True,
+    tqdm_verbose: bool = False,
 ) -> _csr_matrix:
     """
     Keeps the top terms per row and prune the rest. The dividing point is the
@@ -308,7 +308,6 @@ def prune_csr_per_row_infl_point(
         itor_ = _tqdm(
             range(csr_mat.shape[0]),
             desc=f"Pruning off nodes",
-            ncols=60,
         )
     else:
         itor_ = range(csr_mat.shape[0])
@@ -345,7 +344,10 @@ def prune_csr_per_row_infl_point(
     return pruned_csr
 
 
-def rowwise_cosine_similarity(A: _np.ndarray, B: _np.ndarray) -> _NDArray[_np.float_]:
+def rowwise_cosine_similarity(
+        A: _NDArray,
+        B: _NDArray,
+    ) -> _1DArrayType:
     """
     Compute row-wise cosine similarity between two matrices of shape (N, p).
 
@@ -386,7 +388,7 @@ def rowwise_cosine_similarity(A: _np.ndarray, B: _np.ndarray) -> _NDArray[_np.fl
 
 def chunk_spatial(
     coords: _Nx2ArrayType,
-    n_chunks: int = 9,
+    n_chunks: int = 100,
 ) -> list[list[int]]:
     """
     Split coordinates into ~n_chunks spatially rectangular bins.
@@ -398,7 +400,7 @@ def chunk_spatial(
     Returns:
         A list of lists of point indices in each chunk.
     """
-    if not isinstance(coords, _np.ndarray):
+    if not isinstance(coords, _NDArray):
         coords = _np.array(coords)
     if coords.ndim != 2 or coords.shape[1] != 2:
         raise ValueError("Input coords must be of shape (N, 2).")
@@ -438,7 +440,7 @@ def write_to_csv(
     colname_counts: str = 'counts',
     sep: str = ',',
     save_index_col: bool = False,
-    verbose: bool = True,
+    verbose: bool = False,
 ) -> None:
     """
     Save anndata in csv format, as is used in TopACT (Benjamin, K., Bhandari, A., Kepple, J.D. et al., 2024) or FICTURE (Si, Y., Lee, C., Hwang, Y. et al., 2024).
@@ -454,7 +456,10 @@ def write_to_csv(
 
     """
     if not (filepath.endswith('.csv') or filepath.endswith('.tsv')):
-        filepath += '.csv'
+        if sep == '\t':
+            filepath += '.tsv'
+        else:
+            filepath += '.csv'
     if verbose:
         _tqdm.write(f'Making place for {filepath}')
     dirname = _os.path.dirname(filepath)
@@ -512,7 +517,7 @@ def read_from_csv(
     colname_counts: str = 'counts',
     sep: str = ',',
     exists_index_col: bool = False,
-    verbose: bool = True,
+    verbose: bool = False,
 ) -> _AnnData:
     """
     Read AnnData from csv file (as is used in TopACT (Benjamin, K., Bhandari, A., Kepple, J.D. et al., 2024) or FICTURE (Si, Y., Lee, C., Hwang, Y. et al., 2024)).

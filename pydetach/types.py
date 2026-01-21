@@ -1,18 +1,14 @@
 from typing import (
-    TypeAlias as _TypeAlias,
     Iterable as _Iterable,
     Literal as _Literal,
 )
 from scanpy import AnnData as _AnnData
 from matplotlib.axes import Axes as _Axes
-from numpy.typing import (
-    NDArray as _NDArray,
-)
-from numpy import matrix as _matrix
+from numpy import ndarray as _NDArray
 
-_NumberType: _TypeAlias = int | float
-_Nx2ArrayType: _TypeAlias = _NDArray
-_1DArrayType: _TypeAlias = _NDArray
+_NumberType = int | float
+_Nx2ArrayType = _NDArray
+_1DArrayType = _NDArray
 from scipy.sparse import (
     csr_matrix as _csr_matrix,
     coo_matrix as _coo_matrix,
@@ -22,6 +18,9 @@ from scipy.sparse import (
 
 
 class _UndefinedType:
+    """
+    Placeholder indicating an undefined field.
+    """
     def copy(self):
         return self
 

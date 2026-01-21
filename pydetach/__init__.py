@@ -1,7 +1,7 @@
 """pydetach: Detaching spatial Trascriptomics into Annotated Cells with High confidence"""
 
 __author__ = "Xindong Liu"
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 from .utils import (
     chunk_spatial,
@@ -10,22 +10,16 @@ from .utils import (
     write_to_csv,
 )
 from .data import (
-    AnnDataPreparer,
     binX,
     annotate_mt,
     annotate_ribosomal,
     merge_gene_version,
     scale_genes,
     downsample_cells,
-    compare_umap,
     sort_by_coords,
 )
 from .classifier import (
     SVM,
-    # GaussianNaiveBayes,
-    # QProximityClassifier,
-    # CosineSimilarityClassifier,
-    # JaccardClassifier,
 )
 from .spatial import (
     rw_aggregate,
@@ -34,12 +28,6 @@ from .spatial import (
     extract_cell_sizes_full,
     cluster_spatial_domain,
     spatial_distances,
-    spatial_distances_sequential,
-    spatial_distances_sequential_lossless,
-    spatial_distances_knn,
-    spatial_distances_knn_sequential,
-    spatial_connectivities_knn,
-    combined_connectivities,
     SpatialTypeAnnCntMtx,
     celltype_refined_bin,
     ctrbin_cellseg,
@@ -63,5 +51,4 @@ from .plot import (
     plot_boundaries_on_grids,
 )
 
-# TODO: Add recipe module for user-friendliness
 from . import recipe
