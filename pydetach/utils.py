@@ -191,157 +191,157 @@ def normalize_csr(mat_csr: _csr_matrix) -> _csr_matrix:
     return diag_row_inv @ mat_csr  # Normalized
 
 
-def prune_csr_per_row(
-    csr_mat: _csr_matrix,
-    prune_proportion: float = 0.5,
-    tqdm_verbose: bool = False,
-) -> _csr_matrix:
-    """
-    Deprecated.
+# def prune_csr_per_row(
+#     csr_mat: _csr_matrix,
+#     prune_proportion: float = 0.5,
+#     tqdm_verbose: bool = False,
+# ) -> _csr_matrix:
+#     """
+#     Deprecated.
 
-    Prune the least `prune_proportion` terms per row.
-    """
-    new_data = []
-    new_indices = []
-    new_indptr = [0]
+#     Prune the least `prune_proportion` terms per row.
+#     """
+#     new_data = []
+#     new_indices = []
+#     new_indptr = [0]
 
-    if tqdm_verbose:
-        itor_ = _tqdm(
-            range(csr_mat.shape[0]),
-            desc=f"Pruning off {prune_proportion:.1%} nodes",
-        )
-    else:
-        itor_ = range(csr_mat.shape[0])
-    for i in itor_:
-        row_start = csr_mat.indptr[i]
-        row_end = csr_mat.indptr[i + 1]
-        row_data = csr_mat.data[row_start:row_end]
-        row_indices = csr_mat.indices[row_start:row_end]
+#     if tqdm_verbose:
+#         itor_ = _tqdm(
+#             range(csr_mat.shape[0]),
+#             desc=f"Pruning off {prune_proportion:.1%} nodes",
+#         )
+#     else:
+#         itor_ = range(csr_mat.shape[0])
+#     for i in itor_:
+#         row_start = csr_mat.indptr[i]
+#         row_end = csr_mat.indptr[i + 1]
+#         row_data = csr_mat.data[row_start:row_end]
+#         row_indices = csr_mat.indices[row_start:row_end]
 
-        if len(row_data) == 0:
-            new_indptr.append(len(new_data))
-            continue
+#         if len(row_data) == 0:
+#             new_indptr.append(len(new_data))
+#             continue
 
-        # Sort by value
-        sorted_idx = _np.argsort(row_data)[::-1]
-        keep_count = max(1, int(_np.ceil(len(row_data) * (1 - prune_proportion))))
-        keep_idx = sorted_idx[:keep_count]
+#         # Sort by value
+#         sorted_idx = _np.argsort(row_data)[::-1]
+#         keep_count = max(1, int(_np.ceil(len(row_data) * (1 - prune_proportion))))
+#         keep_idx = sorted_idx[:keep_count]
 
-        # Keep only top proportion
-        new_data.extend(row_data[keep_idx])
-        new_indices.extend(row_indices[keep_idx])
-        new_indptr.append(len(new_data))
+#         # Keep only top proportion
+#         new_data.extend(row_data[keep_idx])
+#         new_indices.extend(row_indices[keep_idx])
+#         new_indptr.append(len(new_data))
 
-    pruned_csr = _csr_matrix(
-        (new_data, new_indices, new_indptr),
-        shape=csr_mat.shape,
-    )
-    return pruned_csr
+#     pruned_csr = _csr_matrix(
+#         (new_data, new_indices, new_indptr),
+#         shape=csr_mat.shape,
+#     )
+#     return pruned_csr
 
 
-def prune_csr_per_row_cum_prob(
-    csr_mat: _csr_matrix,
-    cum_prob_keep: float = 0.5,
-    tqdm_verbose: bool = False,
-) -> _csr_matrix:
-    """
-    DEPRECATED.
+# def prune_csr_per_row_cum_prob(
+#     csr_mat: _csr_matrix,
+#     cum_prob_keep: float = 0.5,
+#     tqdm_verbose: bool = False,
+# ) -> _csr_matrix:
+#     """
+#     DEPRECATED.
 
-    Keeps the top terms with cumulative probability of `cum_prob_keep` per row,
-    and prune the rest. At least one term is retained.
-    """
-    if cum_prob_keep >= 1.0:
-        return csr_mat.copy()
-    new_data = []
-    new_indices = []
-    new_indptr = [0]
+#     Keeps the top terms with cumulative probability of `cum_prob_keep` per row,
+#     and prune the rest. At least one term is retained.
+#     """
+#     if cum_prob_keep >= 1.0:
+#         return csr_mat.copy()
+#     new_data = []
+#     new_indices = []
+#     new_indptr = [0]
 
-    if tqdm_verbose:
-        itor_ = _tqdm(
-            range(csr_mat.shape[0]),
-            desc=f"Pruning off nodes",
-        )
-    else:
-        itor_ = range(csr_mat.shape[0])
-    for i in itor_:
-        row_start = csr_mat.indptr[i]
-        row_end = csr_mat.indptr[i + 1]
-        row_data = csr_mat.data[row_start:row_end]
-        row_indices = csr_mat.indices[row_start:row_end]
+#     if tqdm_verbose:
+#         itor_ = _tqdm(
+#             range(csr_mat.shape[0]),
+#             desc=f"Pruning off nodes",
+#         )
+#     else:
+#         itor_ = range(csr_mat.shape[0])
+#     for i in itor_:
+#         row_start = csr_mat.indptr[i]
+#         row_end = csr_mat.indptr[i + 1]
+#         row_data = csr_mat.data[row_start:row_end]
+#         row_indices = csr_mat.indices[row_start:row_end]
 
-        if len(row_data) == 0:
-            new_indptr.append(len(new_data))
-            continue
+#         if len(row_data) == 0:
+#             new_indptr.append(len(new_data))
+#             continue
 
-        # Sort by value
-        sorted_idx = _np.argsort(row_data)[::-1]
-        cumprob = _np.cumsum(row_data[sorted_idx])
-        keep_count = _np.argwhere(cumprob >= cum_prob_keep)[0][0] + 1
-        keep_idx = sorted_idx[:keep_count]
+#         # Sort by value
+#         sorted_idx = _np.argsort(row_data)[::-1]
+#         cumprob = _np.cumsum(row_data[sorted_idx])
+#         keep_count = _np.argwhere(cumprob >= cum_prob_keep)[0][0] + 1
+#         keep_idx = sorted_idx[:keep_count]
 
-        # Keep only top proportion
-        new_data.extend(row_data[keep_idx])
-        new_indices.extend(row_indices[keep_idx])
-        new_indptr.append(len(new_data))
+#         # Keep only top proportion
+#         new_data.extend(row_data[keep_idx])
+#         new_indices.extend(row_indices[keep_idx])
+#         new_indptr.append(len(new_data))
 
-    pruned_csr = _csr_matrix(
-        (new_data, new_indices, new_indptr),
-        shape=csr_mat.shape,
-    )
-    pruned_csr.eliminate_zeros()
-    return pruned_csr
+#     pruned_csr = _csr_matrix(
+#         (new_data, new_indices, new_indptr),
+#         shape=csr_mat.shape,
+#     )
+#     pruned_csr.eliminate_zeros()
+#     return pruned_csr
 
-def prune_csr_per_row_infl_point(
-    csr_mat: _csr_matrix,
-    min_points_to_keep: int = 1,
-    tqdm_verbose: bool = False,
-) -> _csr_matrix:
-    """
-    Keeps the top terms per row and prune the rest. The dividing point is the
-    inflection point of the sorted similarity curve.
-    """
-    new_data = []
-    new_indices = []
-    new_indptr = [0]
+# def prune_csr_per_row_infl_point(
+#     csr_mat: _csr_matrix,
+#     min_points_to_keep: int = 1,
+#     tqdm_verbose: bool = False,
+# ) -> _csr_matrix:
+#     """
+#     Keeps the top terms per row and prune the rest. The dividing point is the
+#     inflection point of the sorted similarity curve.
+#     """
+#     new_data = []
+#     new_indices = []
+#     new_indptr = [0]
 
-    if tqdm_verbose:
-        itor_ = _tqdm(
-            range(csr_mat.shape[0]),
-            desc=f"Pruning off nodes",
-        )
-    else:
-        itor_ = range(csr_mat.shape[0])
-    for i in itor_:
-        row_start = csr_mat.indptr[i]
-        row_end = csr_mat.indptr[i + 1]
-        row_data = csr_mat.data[row_start:row_end]
-        row_indices = csr_mat.indices[row_start:row_end]
+#     if tqdm_verbose:
+#         itor_ = _tqdm(
+#             range(csr_mat.shape[0]),
+#             desc=f"Pruning off nodes",
+#         )
+#     else:
+#         itor_ = range(csr_mat.shape[0])
+#     for i in itor_:
+#         row_start = csr_mat.indptr[i]
+#         row_end = csr_mat.indptr[i + 1]
+#         row_data = csr_mat.data[row_start:row_end]
+#         row_indices = csr_mat.indices[row_start:row_end]
 
-        if len(row_data) == 0:
-            new_indptr.append(len(new_data))
-            continue
+#         if len(row_data) == 0:
+#             new_indptr.append(len(new_data))
+#             continue
         
-        # Sort by value
-        sorted_idx = _np.argsort(row_data)[::-1]
-        if len(row_data) <= min_points_to_keep:
-            keep_idx = sorted_idx
-        else:
-            sorted_curve = row_data[sorted_idx]
-            delta_curve = sorted_curve[1:] - sorted_curve[:-1]
-            infl_point = _np.argmax(delta_curve)
-            keep_idx = sorted_idx[:max(min_points_to_keep, infl_point+1)]
+#         # Sort by value
+#         sorted_idx = _np.argsort(row_data)[::-1]
+#         if len(row_data) <= min_points_to_keep:
+#             keep_idx = sorted_idx
+#         else:
+#             sorted_curve = row_data[sorted_idx]
+#             delta_curve = sorted_curve[1:] - sorted_curve[:-1]
+#             infl_point = _np.argmax(delta_curve)
+#             keep_idx = sorted_idx[:max(min_points_to_keep, infl_point+1)]
 
-        # Keep only top proportion
-        new_data.extend(row_data[keep_idx])
-        new_indices.extend(row_indices[keep_idx])
-        new_indptr.append(len(new_data))
+#         # Keep only top proportion
+#         new_data.extend(row_data[keep_idx])
+#         new_indices.extend(row_indices[keep_idx])
+#         new_indptr.append(len(new_data))
 
-    pruned_csr = _csr_matrix(
-        (new_data, new_indices, new_indptr),
-        shape=csr_mat.shape,
-    )
-    pruned_csr.eliminate_zeros()
-    return pruned_csr
+#     pruned_csr = _csr_matrix(
+#         (new_data, new_indices, new_indptr),
+#         shape=csr_mat.shape,
+#     )
+#     pruned_csr.eliminate_zeros()
+#     return pruned_csr
 
 
 def rowwise_cosine_similarity(

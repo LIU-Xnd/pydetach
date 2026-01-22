@@ -46,8 +46,8 @@ class _LocalClassifier:
         **kwargs,
     ):
         self._threshold_confidence: float = threshold_confidence
-        self._genes: _NDArray[_np.str_] | _UndefinedType = _UNDEFINED
-        self._classes: _NDArray[_np.str_] | _UndefinedType = _UNDEFINED
+        self._genes: _NDArray | _UndefinedType = _UNDEFINED
+        self._classes: _NDArray| _UndefinedType = _UNDEFINED
         self._normalize: bool = normalize
         self._target_sum: _NumberType = target_sum
         self._log1p: bool = log1p
@@ -65,11 +65,11 @@ class _LocalClassifier:
         return self
 
     @property
-    def genes(self) -> _NDArray[_np.str_] | _UndefinedType:
+    def genes(self) -> _NDArray | _UndefinedType:
         return self._genes.copy()
 
     @property
-    def classes(self) -> _NDArray[_np.str_] | _UndefinedType:
+    def classes(self) -> _NDArray | _UndefinedType:
         return self._classes.copy()
 
     def classId_to_className(self, class_id: int) -> str:
@@ -81,12 +81,12 @@ class _LocalClassifier:
         """Returns the index where `class_name` is in self._classes."""
         return _np.where(self._classes == class_name)[0][0]
 
-    def classIds_to_classNames(self, class_ids: _Iterable[int]) -> _NDArray[_np.str_]:
+    def classIds_to_classNames(self, class_ids: _Iterable[int]) -> _NDArray:
         return _np.array(
             list(map(lambda cid: self.classId_to_className(cid), class_ids))
         )
 
-    def classNames_to_classIds(self, class_names: _Iterable[str]) -> _NDArray[_np.int_]:
+    def classNames_to_classIds(self, class_names: _Iterable[str]) -> _NDArray:
         return _np.array(
             list(map(lambda cnm: self.className_to_classId(cnm), class_names))
         )
@@ -180,7 +180,7 @@ class _LocalClassifier:
         self,
         X: _csr_matrix | _NDArray,
         genes: _Iterable[str] | None = None,
-    ) -> _NDArray[_np.int_]:
+    ) -> _NDArray:
         """Predicts classes of each sample. For example, if prediction is i,
          then the predicted class is self.classes[i].
          For those below confidence threshold,
@@ -195,7 +195,7 @@ class _LocalClassifier:
              those of X's columns. If None, set to pretrained gene list.
 
         Return:
-            _NDArray[_np.int_]: an array of predicted classIds.
+            _NDArray: an array of predicted classIds.
 
         Needs overwriting."""
 
@@ -341,7 +341,7 @@ class SVM(_LocalClassifier):
         self,
         X: _csr_matrix | _NDArray,
         genes: _Iterable[str] | None = None,
-    ) -> _NDArray[_np.float_]:
+    ) -> _NDArray:
         """Predicts the probabilities for each
          sample to be of each class.
 
@@ -382,7 +382,7 @@ class SVM(_LocalClassifier):
         self,
         X: _csr_matrix | _NDArray,
         genes: _Iterable[str] | None = None,
-    ) -> _NDArray[_np.int_]:
+    ) -> _NDArray:
         """Predicts classes of each sample. For example, if prediction is i,
          then the predicted class is self.classes[i].
          For those below confidence threshold,
@@ -395,7 +395,7 @@ class SVM(_LocalClassifier):
              those of X's columns. If None, set to pretrained gene list.
 
         Return:
-            _NDArray[_np.int_]: an array of predicted classIds."""
+            _NDArray: an array of predicted classIds."""
 
         return super().predict(X, genes)
 

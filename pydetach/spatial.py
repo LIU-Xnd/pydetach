@@ -15,7 +15,7 @@ from scipy.sparse import (
     csr_matrix as _csr_matrix,
     identity as _identity,
     lil_matrix as _lil_matrix,
-    vstack as _vstack,
+    # vstack as _vstack,
 )
 from scipy.spatial import cKDTree as _cKDTree
 from sklearn.cluster import MiniBatchKMeans as _MiniBatchKMeans
@@ -39,8 +39,6 @@ from .types import (
 from .utils import (
     chunk_spatial as _chunk_spatial,
     normalize_csr as _normalize_csr,
-    prune_csr_per_row_cum_prob as _prune_csr_per_row_cum_prob,
-    prune_csr_per_row_infl_point as _prune_csr_per_row_infl_point,
     rowwise_cosine_similarity as _rowwise_cosine_similarity,
     to_array as _to_array,
     reinit_index as _reinit_index,
@@ -109,6 +107,49 @@ def spatial_distances(
             'Saved in .obsp["spatial_distances"]. Related param saved in .uns["max_spatial_distance"]'
         )
     return
+
+
+def _get_new_nodes(
+    curr_sim: _csr_matrix,
+    old_sim: _csr_matrix,
+) -> tuple[_1DArrayType, _1DArrayType]:
+    """
+    Get newly added nodes from `curr_sim`
+    to `old_sim`.
+    
+    Return:
+        (new_rows, new_cols)
+    """
+    curr_nodes = curr_sim.nonzero()
+    old_nodes = old_sim.nonzero()
+    ptr_curr: int = 0
+    ptr_old : int = 0
+    new_nodes = (
+        [],
+        [],
+    )
+    for _ in range(curr_nodes[0].shape[0]):
+        curr_node: _1DArrayType = _np.array(
+            [
+                curr_nodes[0][ptr_curr],
+                curr_nodes[1][ptr_curr],
+            ]
+        )
+        old_node: _1DArrayType = _np.array(
+            [
+                old_nodes[0][ptr_old],
+                old_nodes[1][ptr_old],
+            ]
+        )
+        if _np.all(curr_node==old_node):
+            ptr_curr += 1
+            ptr_old += 1
+        else:
+            new_nodes[0].append(curr_node[0])
+            new_nodes[1].append(curr_node[1])
+            ptr_curr += 1
+    return new_nodes
+
 
 
 @_dataclass
@@ -459,11 +500,11 @@ def rw_aggregate(
 
     def _rw_and_prune(curr_sim: _csr_matrix):
         # Random walk
+        old_sim: _csr_matrix = curr_sim.copy()
         if verbose:
             _itor = _tqdm(
                 range(steps_per_iter),
                 desc="Random walk..",
-                ncols=60,
             )
         else:
             _itor = range(steps_per_iter)
@@ -477,10 +518,10 @@ def rw_aggregate(
             mask = _np.zeros_like(curr_sim.data, dtype=bool)
             for i in range(len(curr_sim.data)):
                 if (
-                        (curr_sim.row[i], curr_sim.col[i]) in query_pool_propagation
-                    ) or (
-                        curr_sim.row[i] == curr_sim.col[i]  # self-loop
-                    ):
+                    (curr_sim.row[i], curr_sim.col[i]) in query_pool_propagation
+                ) or (
+                    curr_sim.row[i] == curr_sim.col[i]  # self-loop
+                ):
                     mask[i] = True
 
             # Filter the data to keep only selected values
@@ -494,18 +535,41 @@ def rw_aggregate(
             # Re-normalize
             curr_sim: _csr_matrix = _normalize_csr(curr_sim)
         # prune
-        if mode_prune == 'proportional':
-            curr_sim = _prune_csr_per_row_cum_prob(
-                csr_mat=curr_sim,
-                cum_prob_keep=cum_prob_keep,
-                tqdm_verbose=verbose,
+        new_nodes: tuple[_1DArrayType, _1DArrayType] = _get_new_nodes(
+            curr_sim,
+            old_sim,
+        )
+        # Build a map for ix_rows -> ix_nodes
+        map_row2node = dict()
+        for i_node, row in enumerate(new_nodes[0]):
+            if row not in map_row2node:
+                map_row2node[row] = [i_node]
+                continue
+            map_row2node[row].append(i_node)
+        for row in map_row2node:
+            ix_nodes: list[int] = map_row2node[row]
+            new_cols = new_nodes[1][ix_nodes]
+            new_probs: _1DArrayType = _to_array(
+                curr_sim[row, new_cols],
+                squeeze=True,
             )
-        else:
-            curr_sim = _prune_csr_per_row_infl_point(
-                csr_mat=curr_sim,
-                min_points_to_keep=min_points_to_keep,
-                tqdm_verbose=verbose,
-            )
+            new_probs = new_probs / new_probs.sum()
+            ix_sorted: _1DArrayType = _np.argsort(new_probs)[::-1]
+            probs_cum: _1DArrayType = _np.cumsum(new_probs[ix_sorted])
+            i_elbow_to_drop: int = 1
+            if mode_prune == 'proportional':
+                for i, p in enumerate(probs_cum):
+                    if p >= cum_prob_keep:
+                        i_elbow_to_drop = i+1
+                        break
+            elif mode_prune == 'inflection_point':
+                if len(probs_cum) <= 1:
+                    continue
+                delta_prob: _1DArrayType = probs_cum[1:] - probs_cum[:-1]
+                i_elbow_to_drop = _np.argmax(delta_prob)
+            if i_elbow_to_drop < new_cols.shape[0]:
+                curr_sim[row, new_cols[ix_sorted[max(i_elbow_to_drop, min_points_to_keep):]]] = 0.
+        curr_sim.eliminate_zeros()
         return curr_sim
     
     if skip_init_classification:
@@ -530,12 +594,12 @@ def rw_aggregate(
             X=X_agg_candidate,
             genes=st_anndata.var.index.values,
         )
-        type_ids_candidate: _NDArray[_np.int_] = _np.argmax(probs_candidate, axis=1)
-        confidences_candidate: _NDArray[_np.float_] = probs_candidate[
+        type_ids_candidate: _NDArray = _np.argmax(probs_candidate, axis=1)
+        confidences_candidate: _NDArray = probs_candidate[
             _np.arange(probs_candidate.shape[0]), type_ids_candidate
         ]
         # Find those confident
-        whr_confident_candidate: _NDArray[_np.bool_] = (
+        whr_confident_candidate: _NDArray = (
             confidences_candidate >= classifier._threshold_confidence
         )
         counter_celltypes = dict()  # counter of celltypes for this round
@@ -544,7 +608,6 @@ def rw_aggregate(
             _itor = _tqdm(
                 range(len(candidate_cellids)),
                 desc=f"Gather iter {i_iter+1} results",
-                ncols=60,
             )
         else:
             _itor = range(len(candidate_cellids))
@@ -610,179 +673,179 @@ def rw_aggregate(
     return result
 
 
-def rw_aggregate_sequential(
-    st_anndata: _AnnData,
-    classifier: _LocalClassifier,
-    max_iter: int = 20,
-    steps_per_iter: int = 1,
-    nbhd_radius: float = 1.5,
-    max_propagation_radius: float = 6.0,
-    normalize_: bool = True,
-    log1p_: bool = True,
-    mode_embedding: _Literal["raw", "pc"] = "pc",
-    n_pcs: int = 30,
-    mode_metric: _Literal["inv_dist", "cosine"] = "inv_dist",
-    mode_aggregation: _Literal["weighted", "unweighted"] = "unweighted",
-    mode_prune: _Literal['inflection_point', 'proportional'] = 'inflection_point',
-    cum_prob_keep: float = 0.5,
-    min_points_to_keep: int = 1,
-    mode_walk: _Literal["rw"] = "rw",
-    return_weight_matrix: bool = False,
-    return_cell_sizes: bool = True,
-    verbose: bool = True,
-    n_chunks: int = 9,
-    skip_init_classification: bool = True,
-    topology_nbhd_radius: float | None = None,
-) -> AggregationResult:
-    """
-    Experimental: A re-implementation of rw_aggregate() to ease memory cost by
-    trading memory with time. Might yield slightly different results due to
-    chunking operations. Some cache might be unable to be saved.
+# def rw_aggregate_sequential(
+#     st_anndata: _AnnData,
+#     classifier: _LocalClassifier,
+#     max_iter: int = 20,
+#     steps_per_iter: int = 1,
+#     nbhd_radius: float = 1.5,
+#     max_propagation_radius: float = 6.0,
+#     normalize_: bool = True,
+#     log1p_: bool = True,
+#     mode_embedding: _Literal["raw", "pc"] = "pc",
+#     n_pcs: int = 30,
+#     mode_metric: _Literal["inv_dist", "cosine"] = "inv_dist",
+#     mode_aggregation: _Literal["weighted", "unweighted"] = "unweighted",
+#     mode_prune: _Literal['inflection_point', 'proportional'] = 'inflection_point',
+#     cum_prob_keep: float = 0.5,
+#     min_points_to_keep: int = 1,
+#     mode_walk: _Literal["rw"] = "rw",
+#     return_weight_matrix: bool = False,
+#     return_cell_sizes: bool = True,
+#     verbose: bool = True,
+#     n_chunks: int = 9,
+#     skip_init_classification: bool = True,
+#     topology_nbhd_radius: float | None = None,
+# ) -> AggregationResult:
+#     """
+#     Experimental: A re-implementation of rw_aggregate() to ease memory cost by
+#     trading memory with time. Might yield slightly different results due to
+#     chunking operations. Some cache might be unable to be saved.
 
-    Perform iterative random-walk-based spot aggregation and classification refinement
-    for spatial transcriptomics data.
+#     Perform iterative random-walk-based spot aggregation and classification refinement
+#     for spatial transcriptomics data.
 
-    This function aggregates local spot neighborhoods using a random walk or
-    random walk with restart (RWR), then refines cell type predictions iteratively
-    using a local classifier and aggregated gene expression until confident.
+#     This function aggregates local spot neighborhoods using a random walk or
+#     random walk with restart (RWR), then refines cell type predictions iteratively
+#     using a local classifier and aggregated gene expression until confident.
 
-    Args:
-        st_anndata (_AnnData):
-            AnnData object containing spatial transcriptomics data.
+#     Args:
+#         st_anndata (_AnnData):
+#             AnnData object containing spatial transcriptomics data.
 
-        classifier (_LocalClassifier):
-            A local cell-type classifier with `predict_proba` and `fit` methods, as well as
-            `threshold_confidence` attribute for confidence determination.
+#         classifier (_LocalClassifier):
+#             A local cell-type classifier with `predict_proba` and `fit` methods, as well as
+#             `threshold_confidence` attribute for confidence determination.
 
-        max_iter (int, optional):
-            Number of refinement iterations to perform.
+#         max_iter (int, optional):
+#             Number of refinement iterations to perform.
 
-        steps_per_iter (int, optional):
-            Number of random walk steps to perform in each iteration.
+#         steps_per_iter (int, optional):
+#             Number of random walk steps to perform in each iteration.
 
-        nbhd_radius (float, optional):
-            Radius for defining local neighborhood in spatial graph construction.
+#         nbhd_radius (float, optional):
+#             Radius for defining local neighborhood in spatial graph construction.
 
-        max_propagation_radius (float, optional):
-            Radius for maximum possible random walk distance in spatial graph propagation.
+#         max_propagation_radius (float, optional):
+#             Radius for maximum possible random walk distance in spatial graph propagation.
 
-        normalize_ (bool, optional):
-            Whether to perform normalization on raw count matrix before building spatial graph.
-            Default is True.
+#         normalize_ (bool, optional):
+#             Whether to perform normalization on raw count matrix before building spatial graph.
+#             Default is True.
 
-        log1p_ (bool, optional):
-            Whether to perform log1p on raw count matrix before building spatial graph. Default is True.
+#         log1p_ (bool, optional):
+#             Whether to perform log1p on raw count matrix before building spatial graph. Default is True.
 
-        mode_embedding (Literal['raw', 'pc'], optional):
-            Embedding mode for similarity calculation.
-            'raw' uses the original expression matrix; 'pc' uses PCA-reduced data. Default is 'pc'.
+#         mode_embedding (Literal['raw', 'pc'], optional):
+#             Embedding mode for similarity calculation.
+#             'raw' uses the original expression matrix; 'pc' uses PCA-reduced data. Default is 'pc'.
 
-        n_pcs (int, optional):
-            Number of principal components to retain when `mode_embedding='pc'`.
+#         n_pcs (int, optional):
+#             Number of principal components to retain when `mode_embedding='pc'`.
 
-        mode_metric (Literal['inv_dist', 'cosine'], optional):
-            Distance or similarity metric to define transition weights between spots.
+#         mode_metric (Literal['inv_dist', 'cosine'], optional):
+#             Distance or similarity metric to define transition weights between spots.
 
-        mode_aggregation (Literal['unweighted', 'weighted'], optional):
-            Aggregation strategy to combine neighborhood gene expression.
-            'unweighted' uses uniform averaging; 'weighted' uses transition probabilities.
+#         mode_aggregation (Literal['unweighted', 'weighted'], optional):
+#             Aggregation strategy to combine neighborhood gene expression.
+#             'unweighted' uses uniform averaging; 'weighted' uses transition probabilities.
 
-        mode_prune (Literal['inflection_point', 'proportional'], optional):
-            Type of pruning strategy. Defaults to inflection_point.
+#         mode_prune (Literal['inflection_point', 'proportional'], optional):
+#             Type of pruning strategy. Defaults to inflection_point.
         
-        cum_prob_keep (float, optional):
-            If mode_prune is 'proportional', this value must be provide. The cumulative probability
-            above which neighboring spots to keep.
+#         cum_prob_keep (float, optional):
+#             If mode_prune is 'proportional', this value must be provide. The cumulative probability
+#             above which neighboring spots to keep.
 
-        mode_walk (Literal['rw', 'rwr'], optional):
-            Type of random walk to perform:
-            'rw' for vanilla random walk,
-            'rwr' for random walk with restart. Default is 'rw'.
+#         mode_walk (Literal['rw', 'rwr'], optional):
+#             Type of random walk to perform:
+#             'rw' for vanilla random walk,
+#             'rwr' for random walk with restart. Default is 'rw'.
 
-        return_weight_matrix (bool, optional):
-            If True, will return weight_matrix in AggregationResult. Note this process may increase
-            computational time! In sequential mode, this must be False.
+#         return_weight_matrix (bool, optional):
+#             If True, will return weight_matrix in AggregationResult. Note this process may increase
+#             computational time! In sequential mode, this must be False.
 
-        return_cell_sizes (bool, optional):
-            If True, will return cellsizes of confident cells in AggregationResult.dataframe. This process can
-            help improve binning accuracy for downstream analysis.
+#         return_cell_sizes (bool, optional):
+#             If True, will return cellsizes of confident cells in AggregationResult.dataframe. This process can
+#             help improve binning accuracy for downstream analysis.
 
-        n_chunks (int, optional):
-            Number of chunks to split the spatial anndata into. Actual numbers might slightly vary.
+#         n_chunks (int, optional):
+#             Number of chunks to split the spatial anndata into. Actual numbers might slightly vary.
 
-    Returns:
-        AggregationResult:
-            A dataclass containing:
-                - `dataframe`: DataFrame with predicted `cell_id`, `cell_type`, and confidence scores.
-                - `expr_matrix`: CSR matrix of aggregated expression for confident spots.
-                - `weight_matrix`: CSR matrix representing transition probabilities between all spots, if `return_weight_matrix`;
-                otherwise an empty matrix of the same shape.
-    """
-    assert return_weight_matrix == False
+#     Returns:
+#         AggregationResult:
+#             A dataclass containing:
+#                 - `dataframe`: DataFrame with predicted `cell_id`, `cell_type`, and confidence scores.
+#                 - `expr_matrix`: CSR matrix of aggregated expression for confident spots.
+#                 - `weight_matrix`: CSR matrix representing transition probabilities between all spots, if `return_weight_matrix`;
+#                 otherwise an empty matrix of the same shape.
+#     """
+#     assert return_weight_matrix == False
     
-    chunk_indices: list[list[int]] = _chunk_spatial(
-        coords=st_anndata.obsm['spatial'],
-        n_chunks=n_chunks,
-    )
-    aggres_chunks: list[AggregationResult] = []
-    nrow_expr_matrix: int = 0
-    nrow_weight_matrix: int = 0  # placeholder
-    for i_chunk, indices_chunk in enumerate(chunk_indices):
-        if verbose:
-            _tqdm.write(f"Chunk {i_chunk+1}/{len(chunk_indices)}, with {len(indices_chunk)} points ..")
-        st_anndata_chunk = st_anndata[indices_chunk, :].copy()
-        aggres_chunks.append(
-            rw_aggregate(
-                st_anndata=st_anndata_chunk,
-                classifier=classifier,
-                max_iter=max_iter,
-                steps_per_iter=steps_per_iter,
-                nbhd_radius=nbhd_radius,
-                max_propagation_radius=max_propagation_radius,
-                normalize_=normalize_,
-                log1p_=log1p_,
-                mode_embedding=mode_embedding,
-                n_pcs=n_pcs,
-                mode_metric=mode_metric,
-                mode_aggregation=mode_aggregation,
-                mode_prune=mode_prune,
-                cum_prob_keep=cum_prob_keep,
-                min_points_to_keep=min_points_to_keep,
-                mode_walk=mode_walk,
-                return_weight_matrix=return_weight_matrix,
-                return_cell_sizes=return_cell_sizes,
-                verbose=verbose,
-                skip_init_classification=skip_init_classification,
-                topology_nbhd_radius=topology_nbhd_radius,
-            )
-        )
-        nrow_expr_matrix += aggres_chunks[-1].expr_matrix.shape[0]
-        nrow_weight_matrix += aggres_chunks[-1].weight_matrix.shape[0]
+#     chunk_indices: list[list[int]] = _chunk_spatial(
+#         coords=st_anndata.obsm['spatial'],
+#         n_chunks=n_chunks,
+#     )
+#     aggres_chunks: list[AggregationResult] = []
+#     nrow_expr_matrix: int = 0
+#     nrow_weight_matrix: int = 0  # placeholder
+#     for i_chunk, indices_chunk in enumerate(chunk_indices):
+#         if verbose:
+#             _tqdm.write(f"Chunk {i_chunk+1}/{len(chunk_indices)}, with {len(indices_chunk)} points ..")
+#         st_anndata_chunk = st_anndata[indices_chunk, :].copy()
+#         aggres_chunks.append(
+#             rw_aggregate(
+#                 st_anndata=st_anndata_chunk,
+#                 classifier=classifier,
+#                 max_iter=max_iter,
+#                 steps_per_iter=steps_per_iter,
+#                 nbhd_radius=nbhd_radius,
+#                 max_propagation_radius=max_propagation_radius,
+#                 normalize_=normalize_,
+#                 log1p_=log1p_,
+#                 mode_embedding=mode_embedding,
+#                 n_pcs=n_pcs,
+#                 mode_metric=mode_metric,
+#                 mode_aggregation=mode_aggregation,
+#                 mode_prune=mode_prune,
+#                 cum_prob_keep=cum_prob_keep,
+#                 min_points_to_keep=min_points_to_keep,
+#                 mode_walk=mode_walk,
+#                 return_weight_matrix=return_weight_matrix,
+#                 return_cell_sizes=return_cell_sizes,
+#                 verbose=verbose,
+#                 skip_init_classification=skip_init_classification,
+#                 topology_nbhd_radius=topology_nbhd_radius,
+#             )
+#         )
+#         nrow_expr_matrix += aggres_chunks[-1].expr_matrix.shape[0]
+#         nrow_weight_matrix += aggres_chunks[-1].weight_matrix.shape[0]
     
-    relabeled_dfs: list[_pd.DataFrame] = []
-    relabeled_weight_matrix: _csr_matrix = _csr_matrix((nrow_weight_matrix, nrow_weight_matrix))
-    stacked_expr_matrix = []
-    for aggres, indices in zip(aggres_chunks, chunk_indices):
-        df = aggres.dataframe.copy()
-        df['cell_id'] = df["cell_id"].apply(lambda i: indices[i])
-        relabeled_dfs.append(df)
-        stacked_expr_matrix.append(aggres.expr_matrix)
-    stacked_expr_matrix: _csr_matrix = _vstack(stacked_expr_matrix)
-    return AggregationResult(
-        dataframe=_pd.concat(
-            relabeled_dfs,
-            axis=0,
-            ignore_index=True,
-        ),
-        expr_matrix=stacked_expr_matrix,
-        weight_matrix=relabeled_weight_matrix,
-    )
+#     relabeled_dfs: list[_pd.DataFrame] = []
+#     relabeled_weight_matrix: _csr_matrix = _csr_matrix((nrow_weight_matrix, nrow_weight_matrix))
+#     stacked_expr_matrix = []
+#     for aggres, indices in zip(aggres_chunks, chunk_indices):
+#         df = aggres.dataframe.copy()
+#         df['cell_id'] = df["cell_id"].apply(lambda i: indices[i])
+#         relabeled_dfs.append(df)
+#         stacked_expr_matrix.append(aggres.expr_matrix)
+#     stacked_expr_matrix: _csr_matrix = _vstack(stacked_expr_matrix)
+#     return AggregationResult(
+#         dataframe=_pd.concat(
+#             relabeled_dfs,
+#             axis=0,
+#             ignore_index=True,
+#         ),
+#         expr_matrix=stacked_expr_matrix,
+#         weight_matrix=relabeled_weight_matrix,
+#     )
 
 
 def extract_celltypes_full(
     aggregation_result: AggregationResult,
     name_undefined: str = "Undefined",
-) -> _NDArray[_np.str_]:
+) -> _NDArray:
     """
     Extract the cell-type labels for all spots from an aggregation result, including
     both confident and non-confident spots.
@@ -807,7 +870,7 @@ def extract_celltypes_full(
 
     Returns:
     --------
-    _NDArray[_np.str_]
+    _NDArray
         A 1D array of cell-type labels for each spot, where each label corresponds
         to a specific cell or region in the input dataset. The array will be sorted
         by cell ID. Undefined spots will be labeled
@@ -856,7 +919,7 @@ def extract_cell_sizes_full(
 
     Returns:
     --------
-    _NDArray[_np.str_]
+    _NDArray
         A 1D array of cell-size labels for each spot, where each label corresponds
         to a specific cell or region in the input dataset. The array will be sorted
         by cell ID. Undefined spots will be assigned size `size_undefined`.
@@ -872,232 +935,231 @@ def extract_cell_sizes_full(
     cellsizes[aggregation_result.dataframe['cell_id'].values] = aggregation_result.dataframe['cell_size'].values
     return cellsizes
 
-@_dataclass
-class SpatialTypeAnnCntMtx:
-    """
-    A data class representing a gene count matrix with spatial coordinates and annotated cell types.
+# @_dataclass
+# class SpatialTypeAnnCntMtx:
+#     """
+#     A data class representing a gene count matrix with spatial coordinates and annotated cell types.
 
-    Attributes:
-    -----------
-    count_matrix : scipy.sparse.csr_matrix
-        A sparse matrix of shape (n_samples, n_genes) where each entry represents
-        the count of a specific gene in a specific sample (or spatial location).
+#     Attributes:
+#     -----------
+#     count_matrix : scipy.sparse.csr_matrix
+#         A sparse matrix of shape (n_samples, n_genes) where each entry represents
+#         the count of a specific gene in a specific sample (or spatial location).
 
-    spatial_distances : csr_matrix
-        A 2D sparse array of shape (n_samples, n_samples), indicating distances between
-        each sample, with all distances above a threshold being set to zero.
+#     spatial_distances : csr_matrix
+#         A 2D sparse array of shape (n_samples, n_samples), indicating distances between
+#         each sample, with all distances above a threshold being set to zero.
 
-    cell_types : numpy.ndarray
-        A 1D array of length n_samples where each element is a string representing
-        the cell type annotation for the corresponding sample or cell.
+#     cell_types : numpy.ndarray
+#         A 1D array of length n_samples where each element is a string representing
+#         the cell type annotation for the corresponding sample or cell.
 
-    Assertions:
-    -----------
-    - The number of rows in `count_matrix` must match the number of rows in `spatial_distances`
-      (i.e., the number of spatial locations).
-    - The number of rows in `count_matrix` must also match the number of entries in `cell_types`
-      (i.e., the number of annotated cell types).
+#     Assertions:
+#     -----------
+#     - The number of rows in `count_matrix` must match the number of rows in `spatial_distances`
+#       (i.e., the number of spatial locations).
+#     - The number of rows in `count_matrix` must also match the number of entries in `cell_types`
+#       (i.e., the number of annotated cell types).
 
-    Example:
-    --------
-    # Create a sparse count matrix, spatial coordinates, and cell types.
-    count_matrix = csr_matrix([[5, 3], [4, 2], [6, 1]])
-    spatial_coords = np.array([[0.1, 0.2], [0.4, 0.5], [0.7, 0.8]])
-    cell_types = np.array(['TypeA', 'TypeB', 'TypeA'])
+#     Example:
+#     --------
+#     # Create a sparse count matrix, spatial coordinates, and cell types.
+#     count_matrix = csr_matrix([[5, 3], [4, 2], [6, 1]])
+#     spatial_coords = np.array([[0.1, 0.2], [0.4, 0.5], [0.7, 0.8]])
+#     cell_types = np.array(['TypeA', 'TypeB', 'TypeA'])
 
-    # Initialize the SpatialTypeAnnCntMtx object.
-    mtx = SpatialTypeAnnCntMtx(count_matrix, spatial_coords, cell_types)
-    """
+#     # Initialize the SpatialTypeAnnCntMtx object.
+#     mtx = SpatialTypeAnnCntMtx(count_matrix, spatial_coords, cell_types)
+#     """
 
-    count_matrix: _csr_matrix
-    spatial_distances: _csr_matrix
-    cell_types: _NDArray[_np.str_]
+#     count_matrix: _csr_matrix
+#     spatial_distances: _csr_matrix
+#     cell_types: _NDArray
 
-    def __post_init__(self):
-        """Ensure the consistency of input data."""
-        assert (
-            self.count_matrix.shape[0] == self.spatial_distances.shape[0]
-        ), "Number of rows in count_matrix must match the number of spatial coordinates."
-        assert (
-            self.count_matrix.shape[0] == self.cell_types.shape[0]
-        ), "Number of rows in count_matrix must match the number of cell type annotations."
-        if not isinstance(self.cell_types, _np.ndarray):
-            self.cell_types = _np.array(self.cell_types).astype(str)
-        assert isinstance(self.spatial_distances, _csr_matrix)
-        return
+#     def __post_init__(self):
+#         """Ensure the consistency of input data."""
+#         assert (
+#             self.count_matrix.shape[0] == self.spatial_distances.shape[0]
+#         ), "Number of rows in count_matrix must match the number of spatial coordinates."
+#         assert (
+#             self.count_matrix.shape[0] == self.cell_types.shape[0]
+#         ), "Number of rows in count_matrix must match the number of cell type annotations."
+#         if not isinstance(self.cell_types, _np.ndarray):
+#             self.cell_types = _np.array(self.cell_types).astype(str)
+#         assert isinstance(self.spatial_distances, _csr_matrix)
+#         return
 
 
-# DONE TODO: Use spatial_distances cache
-def celltype_refined_bin(
-    ann_count_matrix: SpatialTypeAnnCntMtx,
-    bin_radius: float = 3.0,  # bin-7
-    name_undefined: str = "Undefined",
-    fraction_subsampling: float = 1.0,
-    verbose: bool = True,
-) -> SpatialTypeAnnCntMtx:
-    """
-    Aggregate each spot in the spatial transcriptome with its
-    neighboring spots of the same cell-type, based on a specified distance metric.
+# def celltype_refined_bin(
+#     ann_count_matrix: SpatialTypeAnnCntMtx,
+#     bin_radius: float = 3.0,  # bin-7
+#     name_undefined: str = "Undefined",
+#     fraction_subsampling: float = 1.0,
+#     verbose: bool = True,
+# ) -> SpatialTypeAnnCntMtx:
+#     """
+#     Aggregate each spot in the spatial transcriptome with its
+#     neighboring spots of the same cell-type, based on a specified distance metric.
 
-    This function bins each spatial sample (spot) by aggregating the gene count data
-    of its neighboring spots that share the same cell-type annotation. The distance
-    between spots is measured based on the specified distance norm (e.g., Euclidean or
-    Manhattan). The result is a new `SpatialTypeAnnCntMtx` object with aggregated gene
-    counts for each spot, taking into account only the neighboring spots with the same cell type.
+#     This function bins each spatial sample (spot) by aggregating the gene count data
+#     of its neighboring spots that share the same cell-type annotation. The distance
+#     between spots is measured based on the specified distance norm (e.g., Euclidean or
+#     Manhattan). The result is a new `SpatialTypeAnnCntMtx` object with aggregated gene
+#     counts for each spot, taking into account only the neighboring spots with the same cell type.
 
-    Parameters:
-    -----------
-    ann_count_matrix : SpatialTypeAnnCntMtx
-        A `SpatialTypeAnnCntMtx` object containing the gene count matrix, spatial coordinates,
-        and cell-type annotations. The function operates on this matrix to perform spatial binning
-        and aggregation.
+#     Parameters:
+#     -----------
+#     ann_count_matrix : SpatialTypeAnnCntMtx
+#         A `SpatialTypeAnnCntMtx` object containing the gene count matrix, spatial coordinates,
+#         and cell-type annotations. The function operates on this matrix to perform spatial binning
+#         and aggregation.
 
-    bin_radius : float, optional (default=3.0)
-        The radius within which neighboring spots are considered for aggregation.
-        Spots that are within this radius of each other will be grouped together for aggregation.
+#     bin_radius : float, optional (default=3.0)
+#         The radius within which neighboring spots are considered for aggregation.
+#         Spots that are within this radius of each other will be grouped together for aggregation.
 
-    name_undefined : str, optional (default="Undefined")
-        The name of the undefined cell-type. Any aggregated sample with undefined type will
-        be removed from the final result.
+#     name_undefined : str, optional (default="Undefined")
+#         The name of the undefined cell-type. Any aggregated sample with undefined type will
+#         be removed from the final result.
 
-    fraction_subsampling : float, optional (default=1.0)
-        The fraction of samples to randomly subsample, 0.0 to 1.0, to reduce memory taken.
+#     fraction_subsampling : float, optional (default=1.0)
+#         The fraction of samples to randomly subsample, 0.0 to 1.0, to reduce memory taken.
 
-    Returns:
-    --------
-    SpatialTypeAnnCntMtx
-        A new `SpatialTypeAnnCntMtx` object with the aggregated gene counts for each spot,
-        where each spot's gene count has been updated by aggregating its own count and the
-        counts of its neighboring spots that share the same cell type.
+#     Returns:
+#     --------
+#     SpatialTypeAnnCntMtx
+#         A new `SpatialTypeAnnCntMtx` object with the aggregated gene counts for each spot,
+#         where each spot's gene count has been updated by aggregating its own count and the
+#         counts of its neighboring spots that share the same cell type.
 
-    Example:
-    --------
-    # Assuming ann_count_matrix is a valid SpatialTypeAnnCntMtx object
-    aggregated_mtx = celltype_refined_bin(
-        ann_count_matrix,
-        bin_radius=5.0,
-    )
+#     Example:
+#     --------
+#     # Assuming ann_count_matrix is a valid SpatialTypeAnnCntMtx object
+#     aggregated_mtx = celltype_refined_bin(
+#         ann_count_matrix,
+#         bin_radius=5.0,
+#     )
 
-    # The result is a new SpatialTypeAnnCntMtx object with aggregated counts.
-    """
-    assert 0.0 < fraction_subsampling <= 1.0
-    n_samples_raw: int = ann_count_matrix.count_matrix.shape[0]
-    bools_defined: _NDArray[_np.bool_] = ~(
-        ann_count_matrix.cell_types == name_undefined
-    )
-    if fraction_subsampling < 1.0:
-        n_subsample: int = int(round(fraction_subsampling * len(bools_defined)))
-        n_subsample = max(1, n_subsample)
-        n_subsample = min(len(bools_defined), n_subsample)
-        if verbose:
-            _tqdm.write(
-                f"Subsampling {fraction_subsampling:.2%} i.e. {n_subsample} samples.."
-            )
-        ilocs_keep_from_defined: _NDArray[_np.int_] = _np.random.choice(
-            a=_np.arange(int(_np.sum(bools_defined))),
-            size=n_subsample,
-            replace=False,
-        )
-        ilocs_keep: _NDArray[_np.int_] = _np.arange(len(bools_defined))[bools_defined][
-            ilocs_keep_from_defined
-        ]
-        bools_defined[:] = False
-        bools_defined[ilocs_keep] = True
-    ilocs_defined: _NDArray[_np.int_] = _np.arange(n_samples_raw)[bools_defined]
-    n_samples_def: int = len(ilocs_defined)
-    celltype_pool: set[str] = set(
-        _np.unique(ann_count_matrix.cell_types[bools_defined])
-    )
-    # Load distance matrix
-    if verbose:
-        _tqdm.write("Loading spatial distances..")
-    # Get subsampled items
-    dist_mat: _csr_matrix = ann_count_matrix.spatial_distances[bools_defined, :].copy()
-    dist_mat.eliminate_zeros()
-    whr_nonzero = dist_mat.data <= bin_radius
-    dist_mat: _csr_matrix = _csr_matrix(
-        _coo_matrix(
-            (
-                dist_mat.data[whr_nonzero],
-                (
-                    dist_mat.nonzero()[0][whr_nonzero],
-                    dist_mat.nonzero()[1][whr_nonzero],
-                ),
-            ),
-            shape=dist_mat.shape,
-        )
-    )
-    dist_dict: dict[str, _NDArray[_np.int_]] = {
-        "rows": dist_mat.row,
-        "cols": dist_mat.col,
-    }
-    del dist_mat
-    # Mask out those of different type
-    ilocs_items_keep: list[int] = []
-    itor_ = (
-        _tqdm(
-            celltype_pool,
-            desc="Building CTRBin",
-            ncols=60,
-        )
-        if verbose
-        else celltype_pool
-    )
-    for ct in itor_:
-        icols_this_ct: _NDArray[_np.int_] = _np.arange(n_samples_raw)[
-            ann_count_matrix.cell_types == ct
-        ]
-        irows_this_ct: _NDArray[_np.int_] = _np.arange(n_samples_def)[
-            ann_count_matrix.cell_types[bools_defined] == ct
-        ]
-        bools_items_keeprows: _NDArray[_np.bool_] = _np.isin(
-            element=dist_dict["rows"],
-            test_elements=irows_this_ct,
-        )
-        bools_subrows_keepcols: _NDArray[_np.bool_] = _np.isin(
-            element=dist_dict["cols"][bools_items_keeprows],
-            test_elements=icols_this_ct,
-        )
-        ilocs_items_keep_this_ct: _NDArray[_np.int_] = _np.arange(
-            dist_dict["rows"].shape[0]
-        )[bools_items_keeprows][bools_subrows_keepcols]
-        ilocs_items_keep += ilocs_items_keep_this_ct.tolist()
+#     # The result is a new SpatialTypeAnnCntMtx object with aggregated counts.
+#     """
+#     assert 0.0 < fraction_subsampling <= 1.0
+#     n_samples_raw: int = ann_count_matrix.count_matrix.shape[0]
+#     bools_defined: _NDArray = ~(
+#         ann_count_matrix.cell_types == name_undefined
+#     )
+#     if fraction_subsampling < 1.0:
+#         n_subsample: int = int(round(fraction_subsampling * len(bools_defined)))
+#         n_subsample = max(1, n_subsample)
+#         n_subsample = min(len(bools_defined), n_subsample)
+#         if verbose:
+#             _tqdm.write(
+#                 f"Subsampling {fraction_subsampling:.2%} i.e. {n_subsample} samples.."
+#             )
+#         ilocs_keep_from_defined: _NDArray = _np.random.choice(
+#             a=_np.arange(int(_np.sum(bools_defined))),
+#             size=n_subsample,
+#             replace=False,
+#         )
+#         ilocs_keep: _NDArray = _np.arange(len(bools_defined))[bools_defined][
+#             ilocs_keep_from_defined
+#         ]
+#         bools_defined[:] = False
+#         bools_defined[ilocs_keep] = True
+#     ilocs_defined: _NDArray = _np.arange(n_samples_raw)[bools_defined]
+#     n_samples_def: int = len(ilocs_defined)
+#     celltype_pool: set[str] = set(
+#         _np.unique(ann_count_matrix.cell_types[bools_defined])
+#     )
+#     # Load distance matrix
+#     if verbose:
+#         _tqdm.write("Loading spatial distances..")
+#     # Get subsampled items
+#     dist_mat: _csr_matrix = ann_count_matrix.spatial_distances[bools_defined, :].copy()
+#     dist_mat.eliminate_zeros()
+#     whr_nonzero = dist_mat.data <= bin_radius
+#     dist_mat: _csr_matrix = _csr_matrix(
+#         _coo_matrix(
+#             (
+#                 dist_mat.data[whr_nonzero],
+#                 (
+#                     dist_mat.nonzero()[0][whr_nonzero],
+#                     dist_mat.nonzero()[1][whr_nonzero],
+#                 ),
+#             ),
+#             shape=dist_mat.shape,
+#         )
+#     )
+#     dist_dict: dict[str, _NDArray] = {
+#         "rows": dist_mat.row,
+#         "cols": dist_mat.col,
+#     }
+#     del dist_mat
+#     # Mask out those of different type
+#     ilocs_items_keep: list[int] = []
+#     itor_ = (
+#         _tqdm(
+#             celltype_pool,
+#             desc="Building CTRBin",
+#             ncols=60,
+#         )
+#         if verbose
+#         else celltype_pool
+#     )
+#     for ct in itor_:
+#         icols_this_ct: _NDArray = _np.arange(n_samples_raw)[
+#             ann_count_matrix.cell_types == ct
+#         ]
+#         irows_this_ct: _NDArray = _np.arange(n_samples_def)[
+#             ann_count_matrix.cell_types[bools_defined] == ct
+#         ]
+#         bools_items_keeprows: _NDArray= _np.isin(
+#             element=dist_dict["rows"],
+#             test_elements=irows_this_ct,
+#         )
+#         bools_subrows_keepcols: _NDArray = _np.isin(
+#             element=dist_dict["cols"][bools_items_keeprows],
+#             test_elements=icols_this_ct,
+#         )
+#         ilocs_items_keep_this_ct: _NDArray = _np.arange(
+#             dist_dict["rows"].shape[0]
+#         )[bools_items_keeprows][bools_subrows_keepcols]
+#         ilocs_items_keep += ilocs_items_keep_this_ct.tolist()
 
-    # Add diagonals
-    rows = _np.append(
-        arr=dist_dict["rows"],
-        values=_np.arange(n_samples_def),
-    )
-    cols = _np.append(
-        arr=dist_dict["cols"],
-        values=_np.arange(n_samples_def),
-    )
-    ilocs_items_keep += list(
-        range(dist_dict["rows"].shape[0], dist_dict["rows"].shape[0] + n_samples_def)
-    )
-    del dist_dict
+#     # Add diagonals
+#     rows = _np.append(
+#         arr=dist_dict["rows"],
+#         values=_np.arange(n_samples_def),
+#     )
+#     cols = _np.append(
+#         arr=dist_dict["cols"],
+#         values=_np.arange(n_samples_def),
+#     )
+#     ilocs_items_keep += list(
+#         range(dist_dict["rows"].shape[0], dist_dict["rows"].shape[0] + n_samples_def)
+#     )
+#     del dist_dict
 
-    # Building final weight matrix
-    rows = rows[ilocs_items_keep]
-    cols = cols[ilocs_items_keep]
-    data = _np.ones(
-        shape=(len(rows),),
-    )
-    weight_matrix: _coo_matrix = _coo_matrix(
-        (data, (rows, cols)),
-        shape=(n_samples_def, n_samples_raw),
-    ).astype(float)
+#     # Building final weight matrix
+#     rows = rows[ilocs_items_keep]
+#     cols = cols[ilocs_items_keep]
+#     data = _np.ones(
+#         shape=(len(rows),),
+#     )
+#     weight_matrix: _coo_matrix = _coo_matrix(
+#         (data, (rows, cols)),
+#         shape=(n_samples_def, n_samples_raw),
+#     ).astype(float)
 
-    weight_matrix: _csr_matrix = weight_matrix.tocsr()
+#     weight_matrix: _csr_matrix = weight_matrix.tocsr()
 
-    # Get result
-    return SpatialTypeAnnCntMtx(
-        count_matrix=weight_matrix @ ann_count_matrix.count_matrix,
-        spatial_distances=ann_count_matrix.spatial_distances[bools_defined, :][
-            :, bools_defined
-        ].copy(),
-        cell_types=ann_count_matrix.cell_types[bools_defined],
-    )
+#     # Get result
+#     return SpatialTypeAnnCntMtx(
+#         count_matrix=weight_matrix @ ann_count_matrix.count_matrix,
+#         spatial_distances=ann_count_matrix.spatial_distances[bools_defined, :][
+#             :, bools_defined
+#         ].copy(),
+#         cell_types=ann_count_matrix.cell_types[bools_defined],
+#     )
 
 
 @_dataclass
@@ -1170,10 +1232,6 @@ class SpTypeSizeAnnCntMtx:
         return
 
 
-# TODO: Parallel by chunking spatial_distances (50 hrs -> 50/n hrs)
-# DONE TODO: Use spatial_distances cache.
-# (KINDA FIXED) BUG: cellsize is in spots, but ranges_overlap, etc, are in units (e.g., 3um)
-# DONE TODO: attitude_to_undefined param
 def ctrbin_cellseg(
     ann_count_matrix: SpTypeSizeAnnCntMtx,
     coeff_overlap_constraint: float = 1.0,
@@ -1431,15 +1489,15 @@ def ctrbin_cellseg_parallel(
 
 # Utilities
 def cluster_spatial_domain(
-    coords: _NDArray[_np.float_],
-    cell_types: _NDArray[_np.str_],
+    coords: _NDArray,
+    cell_types: _NDArray,
     radius_local: float = 10.0,
     n_clusters: int = 9,
     algorithm: _Literal["agglomerative", "kmeans"] = "agglomerative",
     on_grids: bool = True,
     return_grids_coords: bool = True,
     grid_size: float = 10.0,
-) -> _NDArray[_np.int_] | tuple[_NDArray[_np.int_], _NDArray[_np.float_]]:
+) -> _NDArray | tuple[_NDArray, _NDArray]:
     """
     Cluster spatial spots into many domains based on
     cell-tpye proportion.
@@ -1453,8 +1511,8 @@ def cluster_spatial_domain(
         grid_size: if `on_grid` is True, specifies the unit size of each grid.
 
     Return:
-        tuple[_NDArray[_np.int_], _NDArray[_np.float_]]: (domain_ids, grids_coordinates), if `return_grids_coords`;
-        otherwise _NDArray[_np.int_], an array of cluster indices in corresponding order.
+        tuple[_NDArray, _NDArray]: (domain_ids, grids_coordinates), if `return_grids_coords`;
+        otherwise _NDArray, an array of cluster indices in corresponding order.
     """
     # Validate params
     n_samples: int = coords.shape[0]
@@ -1501,10 +1559,10 @@ def cluster_spatial_domain(
     dist_matrix: _csr_matrix = dist_matrix.tocsr()
 
     # Create celltype-proportion observation matrix
-    celltypes_unique: _NDArray[_np.str_] = _np.sort(
+    celltypes_unique: _NDArray = _np.sort(
         _np.unique(cell_types)
     )  # alphabetically sort
-    obs_matrix: _NDArray[_np.float_] = _np.zeros(
+    obs_matrix: _NDArray = _np.zeros(
         shape=(n_grids, celltypes_unique.shape[0]),
         dtype=float,
     )

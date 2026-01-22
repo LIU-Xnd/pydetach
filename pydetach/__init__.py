@@ -23,13 +23,13 @@ from .classifier import (
 )
 from .spatial import (
     rw_aggregate,
-    rw_aggregate_sequential,
+    # rw_aggregate_sequential,
     extract_celltypes_full,
     extract_cell_sizes_full,
     cluster_spatial_domain,
     spatial_distances,
-    SpatialTypeAnnCntMtx,
-    celltype_refined_bin,
+    # SpatialTypeAnnCntMtx,
+    # celltype_refined_bin,
     ctrbin_cellseg,
     ctrbin_cellseg_parallel,
     SpTypeSizeAnnCntMtx,
