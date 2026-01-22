@@ -51,6 +51,8 @@ def spatial_distances(
     sp_adata: _AnnData,
     max_spatial_distance: _NumberType,
     p_norm: _NumberType = 2,
+    max_n_neighbors: int = 100,
+    batch_size: int = 1000,
     verbose: bool = False,
 ) -> None:
     """Computes spatial distances matrix in csr_matrix format. Saved in place.
@@ -69,21 +71,27 @@ def spatial_distances(
     # Mem-friendly building spatial graph
     rows, cols, data = [], [], []
     if verbose:
-        itor_ = enumerate(_tqdm(sp_adata.obsm['spatial']))
+        itor_ = _tqdm(range(0, sp_adata.obsm['spatial'].shape[0], batch_size))
     else:
-        itor_ = enumerate(sp_adata.obsm['spatial'])
-    for i, x in itor_:
-        ix = ckdtree_spatial.query_ball_point(
-            x,
-            r=max_spatial_distance,
-            p=p_norm,    
+        itor_ = range(0, sp_adata.obsm['spatial'].shape[0], batch_size)
+
+    for start in itor_:
+        end = start + batch_size
+        dists, idxs = ckdtree_spatial.query(
+            sp_adata.obsm['spatial'][start:end],
+            k=max_n_neighbors,
+            distance_upper_bound=max_spatial_distance,
+            p=p_norm,
+            workers=-1,
         )
-        for j in ix:
-            if j > i:
-                d = _np.linalg.norm(x - sp_adata.obsm['spatial'][j,:], ord=p_norm)
-                rows.append(i)
-                cols.append(j)
-                data.append(d)
+        for i_local in range(idxs.shape[0]):
+            i = start + i_local
+            for j, d in zip(idxs[i_local], dists[i_local]):
+                if j == i or j == ckdtree_spatial.n:
+                    continue
+            rows.append(i)
+            cols.append(j)
+            data.append(d)
     distances_propagation: _csr_matrix = _coo_matrix(
         (data, (rows, cols)),
         shape=(sp_adata.shape[0], sp_adata.shape[0])
@@ -91,13 +99,7 @@ def spatial_distances(
     del data
     del rows
     del cols
-    # distances_propagation = _csr_matrix(
-    #     ckdtree_spatial.sparse_distance_matrix(
-    #         other=ckdtree_spatial,
-    #         max_distance=max_spatial_distance,
-    #         p=p_norm,
-    #     )
-    # )
+
     distances_propagation.eliminate_zeros()
     sp_adata.obsp["spatial_distances"] = _csr_matrix(distances_propagation)
     sp_adata.uns["max_spatial_distance"] = max_spatial_distance

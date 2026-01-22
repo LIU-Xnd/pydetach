@@ -56,9 +56,15 @@ from numpy import (
     ndarray as _ndarray,
 )
 
-from .data import (
+from .types import (
     _csr_matrix,
-    _reinit_index,
+)
+
+from .utils import (
+    reinit_index as _reinit_index,
+)
+
+from .data import (
     binX as _binX,
 )
 

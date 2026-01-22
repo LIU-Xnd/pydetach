@@ -8,6 +8,7 @@ from .types import (
     _UndefinedType,
     _UNDEFINED,
 )
+from typing import Any
 from sklearn.svm import LinearSVC as _SVC
 from sklearn.calibration import CalibratedClassifierCV as _CalibratedClassifierCV
 
@@ -84,7 +85,7 @@ class _LocalClassifier:
         sn_adata: _AnnData,
         colname_classes: str = "cell_type",
         to_dense: bool = False,
-    ) -> dict | "_LocalClassifier":
+    ) -> dict | Any:
         """Trains the local classifier using the AnnData (h5ad) format
         snRNA-seq data.
 
@@ -130,7 +131,7 @@ class _LocalClassifier:
         X: _NDArray | _csr_matrix,
         genes: _Iterable[str] | None = None,
         to_dense: bool = False,
-    ) -> dict:
+    ) -> dict | Any:
         """Predicts the probabilities for each
         sample to be of each class.
 
@@ -242,7 +243,7 @@ class SVM(_LocalClassifier):
         normalize: bool = True,
         target_sum: _NumberType = 1e3,
         on_PCs: bool = False,
-        n_PCs: int = 10,
+        n_PCs: int = 30,
         C: float = 1.0,
         tol: float = 1e-4,
         random_state: int | None = None,
@@ -260,7 +261,7 @@ class SVM(_LocalClassifier):
         self._target_sum: _NumberType = target_sum
         self._log1p: bool = log1p
         self._PC_loadings: _NDArray | _UndefinedType = _UNDEFINED
-        self._n_PCs: int = n_PCs if on_PCs else 0
+        self._n_PCs: int = n_PCs
         self._on_PCs: bool = on_PCs
         return super().__init__(threshold_confidence=threshold_confidence)
 
