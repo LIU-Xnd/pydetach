@@ -44,7 +44,9 @@ from .utils import (
     rowwise_cosine_similarity as _rowwise_cosine_similarity,
     to_array as _to_array,
     reinit_index as _reinit_index,
+    arg_2to1 as _arg_2to1,
 )
+
 
 
 def spatial_distances(
@@ -89,9 +91,9 @@ def spatial_distances(
             for j, d in zip(idxs[i_local], dists[i_local]):
                 if j == i or j == ckdtree_spatial.n:
                     continue
-            rows.append(i)
-            cols.append(j)
-            data.append(d)
+                rows.append(i)
+                cols.append(j)
+                data.append(d)
     distances_propagation: _csr_matrix = _coo_matrix(
         (data, (rows, cols)),
         shape=(sp_adata.shape[0], sp_adata.shape[0])
@@ -100,8 +102,7 @@ def spatial_distances(
     del rows
     del cols
 
-    distances_propagation.eliminate_zeros()
-    sp_adata.obsp["spatial_distances"] = _csr_matrix(distances_propagation)
+    sp_adata.obsp["spatial_distances"] = distances_propagation
     sp_adata.uns["max_spatial_distance"] = max_spatial_distance
     if verbose:
         _tqdm.write(
@@ -136,11 +137,11 @@ def rw_aggregate(
     classifier: _LocalClassifier,
     max_iter: int = 20,
     steps_per_iter: int = 1,
-    nbhd_radius: float = 1.5,
-    max_propagation_radius: float = 6.0,
+    nbhd_radius: float = 3.0,
+    max_propagation_radius: float = 15.0,
     normalize_: bool = True,
     log1p_: bool = True,
-    mode_embedding: _Literal["raw", "pc"] = "pc",
+    mode_embedding: _Literal["raw", "pc-adhoc", "pc-fit"] = "pc-fit",
     n_pcs: int = 30,
     mode_metric: _Literal["inv_dist", "cosine"] = "inv_dist",
     mode_aggregation: _Literal["weighted", "unweighted"] = "unweighted",
@@ -189,19 +190,25 @@ def rw_aggregate(
         log1p_ (bool, optional):
             Whether to perform log1p on raw count matrix before building spatial graph. Default is True.
 
-        mode_embedding (Literal['raw', 'pc'], optional):
+        mode_embedding (Literal['raw', 'pc-adhoc', 'pc-fit'], optional):
             Embedding mode for similarity calculation.
-            'raw' uses the original expression matrix; 'pc' uses PCA-reduced data. Default is 'pc'.
+            'raw' uses the original expression matrix;
+            'pc-adhoc' uses PCA derived from the ST;
+            'pc-fit' uses PCA with PC-loadings from the classifier.
+            Default is 'pc-fit'.
 
         n_pcs (int, optional):
-            Number of principal components to retain when `mode_embedding='pc'`.
+            Number of principal components to retain when `mode_embedding` is 'pc-*`.
+            If `mode_embedding` is 'pc-fit', then only min(n_pcs, classifier._n_pcs) is
+            number of PCs are kept.
 
         mode_metric (Literal['inv_dist', 'cosine'], optional):
             Distance or similarity metric to define transition weights between spots.
 
         mode_aggregation (Literal['unweighted', 'weighted'], optional):
             Aggregation strategy to combine neighborhood gene expression.
-            'unweighted' uses uniform averaging; 'weighted' uses transition probabilities.
+            'unweighted' uses uniform averaging, often in company with `mode_prune`;
+            'weighted' uses transition probabilities.
 
         mode_prune (Literal['inflection_point', 'proportional'], optional):
             Type of pruning strategy. Defaults to inflection_point.
@@ -236,10 +243,10 @@ def rw_aggregate(
                 - `weight_matrix`: CSR matrix representing transition probabilities between all spots, if `return_weight_matrix`;
                 otherwise an empty matrix of the same shape.
     """
-    assert mode_embedding in ["raw", "pc"]
+    assert mode_embedding in ["raw", "pc-adhoc", "pc-fit"]
     assert mode_metric in ["inv_dist", "cosine"]
     assert mode_aggregation in ["weighted", "unweighted"]
-    assert mode_prune in ['inflection_point', 'proportional']
+    assert mode_prune in ['inflection_point', 'proportional'] # TODO: only prune last added nodes
     assert mode_walk in ["rw"]
     if topology_nbhd_radius is None:
         topology_nbhd_radius = nbhd_radius
@@ -271,7 +278,7 @@ def rw_aggregate(
     spatial_data = distances_propagation.data
     whr_within_nbhd = spatial_data <= nbhd_radius
     if verbose:
-        _tqdm.write('Building neighborhoods..')
+        _tqdm.write('Building local neighborhoods..')
     distances_spatial = _coo_matrix(
         (
             spatial_data[whr_within_nbhd],
@@ -296,7 +303,7 @@ def rw_aggregate(
     cols_nonzero = _np.concatenate(
         [cols_nonzero, _np.arange(distances_propagation.shape[0])]  # including selves
     )
-    distances_propagation
+    
     query_pool_propagation = set(
         zip(rows_nonzero, cols_nonzero)
     )  # all possible nonzero ilocs for propagation
@@ -341,11 +348,11 @@ def rw_aggregate(
         X = W_topo @ X
     del distances_propagation
     if normalize_:
-        X = _normalize_csr(X)
+        X = _normalize_csr(X) * classifier._target_sum
     if log1p_:
         X.data = _np.log1p(X.data)
     # Get SVD transformer
-    if mode_embedding == "pc":
+    if mode_embedding == "pc-adhoc":
         n_pcs: int = min(n_pcs, X.shape[1])
         if n_pcs > 100:
             _tqdm.write(
@@ -359,8 +366,19 @@ def rw_aggregate(
         svd.fit(
             X=X,
         )
-        embed_loadings: _np.ndarray = svd.components_  # k x n_features
+        embed_loadings: _NDArray = svd.components_  # k x n_features
         del svd
+    elif mode_embedding == 'pc-fit':
+        n_pcs: int = min(n_pcs, classifier._PC_loadings.shape[0])
+        if n_pcs > 100:
+            _tqdm.write(
+                f"Warning: {n_pcs} pcs might be too large. Take care of your ram."
+            )
+        ix_genes_ReftoST = _arg_2to1(
+            lst1=st_anndata[:,st_anndata.var.index.isin(classifier._genes)].var.index.values,
+            lst2=classifier._genes,
+        )
+        embed_loadings: _NDArray = classifier._PC_loadings[:,ix_genes_ReftoST]
     else:
         n_features = X.shape[1]
         if n_features > 100:
@@ -407,7 +425,7 @@ def rw_aggregate(
             )
         )
     
-    
+    # TODO: prune only on newly added nodes, not all
     similarities_init[
         _np.arange(similarities_init.shape[0]), _np.arange(similarities_init.shape[0])
     ] = 1.0

@@ -38,11 +38,22 @@ class _LocalClassifier:
     def __init__(
         self,
         threshold_confidence: float = 0.75,
+        log1p: bool = True,
+        normalize: bool = True,
+        target_sum: _NumberType = 1e3,
+        on_PCs: bool = False,
+        n_PCs: int = 30,
         **kwargs,
     ):
         self._threshold_confidence: float = threshold_confidence
         self._genes: _NDArray[_np.str_] | _UndefinedType = _UNDEFINED
         self._classes: _NDArray[_np.str_] | _UndefinedType = _UNDEFINED
+        self._normalize: bool = normalize
+        self._target_sum: _NumberType = target_sum
+        self._log1p: bool = log1p
+        self._PC_loadings: _NDArray | _UndefinedType = _UNDEFINED
+        self._n_PCs: int = n_PCs
+        self._on_PCs: bool = on_PCs
         return None
 
     @property
