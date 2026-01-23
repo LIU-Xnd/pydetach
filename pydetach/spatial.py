@@ -1290,7 +1290,7 @@ def ctrbin_cellseg(
         assert len(nuclei_priorities) == n_samples_raw
     # Estimate overlap ranges by coeff * 2 * sqrt(S * area_per_spot / pi)
     ranges_overlap: _1DArrayType = (
-        coeff_overlap_constraint * _np.sqrt(ann_count_matrix.cell_sizes * coeff_cellsize)
+        coeff_overlap_constraint * _np.sqrt(ann_count_matrix.cell_sizes * coeff_cellsize / _np.pi)
     )
     if nuclei_priorities is not None:
         ix_sorted_by_counts: _1DArrayType = nuclei_priorities.copy()
@@ -1340,7 +1340,6 @@ def ctrbin_cellseg(
         itor_ = _tqdm(
             range(n_samples_raw),
             desc="Finding cells",
-            ncols=60,
         )
     else:
         itor_ = range(n_samples_raw)
@@ -1614,8 +1613,8 @@ def cluster_spatial_domain(
 
 def aggregate_spots_to_cells(
     st_anndata: _AnnData,
-    obs_name_cell_id: str = "cell_id_pytacs",
-    obs_name_cell_type: str | None = "cell_type_pytacs",
+    obs_name_cell_id: str = "cell_id_detach",
+    obs_name_cell_type: str | None = "cell_type_detach",
     verbose: bool = True,
 ) -> _AnnData:
     """
@@ -1651,7 +1650,6 @@ def aggregate_spots_to_cells(
         itor_ = _tqdm(
             range(len(cell_id_pool)),
             desc="Aggregating spots",
-            ncols=60,
         )
     else:
         itor_ = range(len(cell_id_pool))
@@ -1689,8 +1687,8 @@ def aggregate_spots_to_cells(
 
 def aggregate_spots_to_cells_parallel(
     st_anndata: _AnnData,
-    obs_name_cell_id: str = "cell_id_pytacs",
-    obs_name_cell_type: str | None = 'cell_type_pytacs',
+    obs_name_cell_id: str = "cell_id_detach",
+    obs_name_cell_type: str | None = 'cell_type_detach',
     n_workers: int = 10,
     verbose: bool = True,
 ) -> _AnnData:
@@ -1936,8 +1934,8 @@ def transfer_label(
     assert obsmname_spatial in adata_to.obsm_keys()
     assert obsmname_spatial in adata_from.obsm_keys()
 
-    _reinit_index(adata_from, colname_to_save_oldIndex='__old_index')
-    _reinit_index(adata_to, '__old_index')
+    _reinit_index(adata_from, colname_to_save_oldIndex='__old_index', save_oldIndex=True)
+    _reinit_index(adata_to, '__old_index', save_oldIndex=True)
     vonoroi_indices(
         adata_to,
         nuclei_coords=adata_from.obsm[obsmname_spatial],

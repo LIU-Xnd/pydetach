@@ -347,7 +347,7 @@ def run_segment(
         n_workers=n_workers,
         verbose=verbose,
     )
-    _reinit_index(trx, '__tmp_indices')
+    _reinit_index(trx, '__tmp_indices', save_oldIndex=True)
     del trx.obs['__tmp_indices']
     if filepath_out is not None:
         _log(f'Writing to {filepath_out}', verbose)
