@@ -308,7 +308,6 @@ def run_annotate(
         max_iter=n_iterations,
         nbhd_radius=radius,
         max_propagation_radius=trx.uns['max_spatial_distance'],
-        mode_prune='proportional',
         verbose=verbose,
     )
     trx.obs['cell_type_detach'] = _ext_ct(aggres)

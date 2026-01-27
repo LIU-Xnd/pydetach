@@ -5,8 +5,8 @@ def _dedent(s: str) -> str:
     return s.strip().replace(' '*4, '').replace('\n', ' ')
 
 parser = AP(
-    description=_dedent("""DeTACH: Image-free Cell Annotator and Segmentor
-        for high-resolution spatial transcriptomics."""),
+    description=_dedent("""deTACH: Image-free Cell Annotator and Segmentor
+        for subcellular-resolution spatial transcriptomics."""),
 )
 subparsers = parser.add_subparsers(
     title='subcommands',

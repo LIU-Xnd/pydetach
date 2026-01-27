@@ -122,6 +122,8 @@ def to_array(
     """
     if _issparse(X):
         X = X.toarray()
+    else: # CRITICAL BUGFIX 2026.1.27 This must exist for matrix type.
+        X = _np.array(X)
     if squeeze:
         X = X.ravel().copy()
     return X

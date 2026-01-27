@@ -5,7 +5,7 @@ import numpy as _np
 import pandas as _pd
 import scanpy as _sc
 from dataclasses import dataclass as _dataclass
-from multiprocessing.pool import Pool as _Pool
+from multiprocess.pool import Pool as _Pool
 from scipy.cluster.hierarchy import (
     fcluster as _fcluster,
     linkage as _linkage,
@@ -135,6 +135,12 @@ def _get_new_nodes(
                 curr_nodes[1][ptr_curr],
             ]
         )
+        if ptr_old >= old_nodes[0].shape[0]:
+            # All trailing nodes are new
+            new_nodes[0].append(curr_node[0])
+            new_nodes[1].append(curr_node[1])
+            ptr_curr += 1
+            continue
         old_node: _1DArrayType = _np.array(
             [
                 old_nodes[0][ptr_old],
@@ -148,7 +154,10 @@ def _get_new_nodes(
             new_nodes[0].append(curr_node[0])
             new_nodes[1].append(curr_node[1])
             ptr_curr += 1
-    return new_nodes
+    return (
+        _np.array(new_nodes[0]),
+        _np.array(new_nodes[1]),
+    )
 
 
 
@@ -1290,7 +1299,7 @@ def ctrbin_cellseg(
         assert len(nuclei_priorities) == n_samples_raw
     # Estimate overlap ranges by coeff * 2 * sqrt(S * area_per_spot / pi)
     ranges_overlap: _1DArrayType = (
-        coeff_overlap_constraint * _np.sqrt(ann_count_matrix.cell_sizes * coeff_cellsize / _np.pi)
+        coeff_overlap_constraint * 2 * _np.sqrt(ann_count_matrix.cell_sizes * coeff_cellsize / _np.pi)
     )
     if nuclei_priorities is not None:
         ix_sorted_by_counts: _1DArrayType = nuclei_priorities.copy()
@@ -1305,7 +1314,8 @@ def ctrbin_cellseg(
             [
                 ix_sorted_by_counts[ann_count_matrix.cell_types[ix_sorted_by_counts] != type_name_undefined],
                 ix_sorted_by_counts[ann_count_matrix.cell_types[ix_sorted_by_counts] == type_name_undefined],
-            ]
+            ],
+            axis=0,
         )
     if verbose:
         _tqdm.write(f"Loading spatial distances..")
