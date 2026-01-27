@@ -1,7 +1,7 @@
 """pydetach: Detaching spatial Trascriptomics into Annotated Cells with High confidence"""
 
 __author__ = "Xindong Liu"
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 from .utils import (
     chunk_spatial,
@@ -13,6 +13,7 @@ from .data import (
     binX,
     annotate_mt,
     annotate_ribosomal,
+    annotate_uncharacterized_genes,
     merge_gene_version,
     scale_genes,
     downsample_cells,

@@ -156,6 +156,32 @@ def annotate_ribosomal(
         _tqdm.write(f"Annotated {ribosomal_genes.sum()} ribosomal genes starting with {startswith} in adata.var['{key_added}'].")
     return
 
+def annotate_uncharacterized_genes(
+    adata: _AnnData,
+    startswith: str | _Iterable[str] = ("RPL", "RPS", "MT-", "AC", "AL", "LOC"),
+    key_added: str = 'uncharacterized',
+) -> None:
+    """
+    Annotate uncharacterized genes in an AnnData object.
+
+    Args:
+        adata (_AnnData): The AnnData object to process.
+        startswith (str | Iterable[str]): The prefix of uncharacterized genes to remove.
+            Defaults to ("RPL", "RPS", "MT-", "AC", "AL", "LOC").
+        key_added (str): The key under which to store the annotation in `adata.var`.
+            Defaults to 'uncharacterized'.
+    """
+    assert isinstance(adata, _AnnData)
+    if isinstance(startswith, str):
+        startswith = [startswith]
+    bad_genes = adata.var.index.str.startswith(tuple(startswith))
+    adata.var[key_added] = bad_genes
+    if bad_genes.sum() == 0:
+        _tqdm.write(f"Warning: No genes found starting with {startswith}!")
+    else:
+        _tqdm.write(f"Annotated {bad_genes.sum()} ribosomal genes starting with {startswith} in adata.var['{key_added}'].")
+    return
+
 def merge_gene_version(
     adata: _AnnData,
     version_sep: str = ".",
