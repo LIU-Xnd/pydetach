@@ -258,6 +258,7 @@ class SVM(_LocalClassifier):
         C: float = 1.0,
         tol: float = 1e-4,
         random_state: int | None = None,
+        n_jobs: int = -1,
         **kwargs,
     ):
         _model = _SVC(
@@ -267,7 +268,7 @@ class SVM(_LocalClassifier):
             dual=False,
             **kwargs,
         )
-        self._model = _CalibratedClassifierCV(_model)
+        self._model = _CalibratedClassifierCV(_model, n_jobs=n_jobs)
         self._normalize: bool = normalize
         self._target_sum: _NumberType = target_sum
         self._log1p: bool = log1p

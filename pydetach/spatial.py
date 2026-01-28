@@ -47,6 +47,7 @@ from .utils import (
 
 
 
+
 def spatial_distances(
     sp_adata: _AnnData,
     max_spatial_distance: _NumberType,
@@ -92,10 +93,10 @@ def spatial_distances(
                 rows.append(i)
                 cols.append(j)
                 data.append(d)
-    distances_propagation: _csr_matrix = _coo_matrix(
+    distances_propagation: _csr_matrix = _csr_matrix(
         (data, (rows, cols)),
         shape=(sp_adata.shape[0], sp_adata.shape[0])
-    ).tocsr()
+    )
     del data
     del rows
     del cols
@@ -120,44 +121,21 @@ def _get_new_nodes(
     Return:
         (new_rows, new_cols)
     """
-    curr_nodes = curr_sim.nonzero()
-    old_nodes = old_sim.nonzero()
-    ptr_curr: int = 0
-    ptr_old : int = 0
-    new_nodes = (
-        [],
-        [],
-    )
-    for _ in range(curr_nodes[0].shape[0]):
-        curr_node: _1DArrayType = _np.array(
-            [
-                curr_nodes[0][ptr_curr],
-                curr_nodes[1][ptr_curr],
-            ]
-        )
-        if ptr_old >= old_nodes[0].shape[0]:
-            # All trailing nodes are new
-            new_nodes[0].append(curr_node[0])
-            new_nodes[1].append(curr_node[1])
-            ptr_curr += 1
-            continue
-        old_node: _1DArrayType = _np.array(
-            [
-                old_nodes[0][ptr_old],
-                old_nodes[1][ptr_old],
-            ]
-        )
-        if _np.all(curr_node==old_node):
-            ptr_curr += 1
-            ptr_old += 1
-        else:
-            new_nodes[0].append(curr_node[0])
-            new_nodes[1].append(curr_node[1])
-            ptr_curr += 1
-    return (
-        _np.array(new_nodes[0]),
-        _np.array(new_nodes[1]),
-    )
+    # Get non-zero positions
+    curr_rows, curr_cols = curr_sim.nonzero()
+    old_rows, old_cols = old_sim.nonzero()
+    
+    # Create combined indices (assuming dimensions fit in 64-bit)
+    max_dim = max(curr_sim.shape[0], curr_sim.shape[1])
+    shift_bits = max_dim.bit_length()  # Bits needed to represent max dimension
+    
+    curr_indices = (curr_rows.astype(_np.int64) << shift_bits) | curr_cols
+    old_indices = (old_rows.astype(_np.int64) << shift_bits) | old_cols
+    
+    # Find indices not in old
+    mask = ~_np.isin(curr_indices, old_indices)
+    
+    return curr_rows[mask], curr_cols[mask]
 
 
 
@@ -323,8 +301,7 @@ def rw_aggregate(
         )
     # Construct spatial dist matrix
     distances_propagation.eliminate_zeros()
-    spatial_rows = distances_propagation.nonzero()[0]
-    spatial_cols = distances_propagation.nonzero()[1]
+    spatial_rows, spatial_cols = distances_propagation.nonzero()
     spatial_data = distances_propagation.data
     whr_within_nbhd = spatial_data <= nbhd_radius
     if verbose:
@@ -354,22 +331,29 @@ def rw_aggregate(
         [cols_nonzero, _np.arange(distances_propagation.shape[0])]  # including selves
     )
     
-    query_pool_propagation = set(
-        zip(rows_nonzero, cols_nonzero)
-    )  # all possible nonzero ilocs for propagation
+    # TODO: replace query_pool_propagation with propagation_mask
+    propgation_mask = _csr_matrix(
+        (
+            _np.ones(shape=len(rows_nonzero), dtype=_np.bool_),
+            (
+                rows_nonzero,
+                cols_nonzero,
+            ),
+        ),
+        dtype='bool',
+    )
 
     del rows_nonzero
     del cols_nonzero
-    # <<<
+    # <<< Get spatial neighborhood
     
-    X: _csr_matrix = st_anndata[:,st_anndata.var.index.isin(classifier._genes)].X.astype(float).copy()
+    X: _csr_matrix = st_anndata[:,st_anndata.var.index.isin(classifier._genes)].X.astype('float32').copy()
     # Aggregate spots within topology_nbhd_radius:
     if topology_nbhd_radius > 0:
         if verbose:
             _tqdm.write(f"Aggregating spots within topology_nbhd_radius={topology_nbhd_radius}..")
-        spatial_rows = distances_propagation.nonzero()[0]
-        spatial_cols = distances_propagation.nonzero()[1]
-        spatial_data = distances_propagation.data
+        spatial_rows, spatial_cols = distances_propagation.nonzero()
+        spatial_data = distances_propagation.data # Excluding selves
         whr_within_nbhd_topo = spatial_data <= topology_nbhd_radius
         if verbose:
             _tqdm.write('Building spot-wise profiles..')
@@ -504,12 +488,13 @@ def rw_aggregate(
         "data": [],
     }  # final weight_matrix of all spots, gonna update
 
-    # Judge & Random Walk
+    # >>> Judge & Random Walk
     similarities: _csr_matrix = _identity(similarities_init.shape[0], format='csr')  # start from Id matrix
 
     def _rw_and_prune(curr_sim: _csr_matrix):
-        # Random walk
-        old_sim: _csr_matrix = curr_sim.copy()
+        curr_sim.eliminate_zeros()
+        old_sim = curr_sim.copy()
+        # --- Random walk ---
         if verbose:
             _itor = _tqdm(
                 range(steps_per_iter),
@@ -518,68 +503,123 @@ def rw_aggregate(
         else:
             _itor = range(steps_per_iter)
         for i_step in _itor:
-            curr_sim: _csr_matrix = curr_sim @ similarities_init
+            curr_sim = curr_sim.dot(similarities_init)
             # Truncate propagation by max_propagation_radius for fast computation and stability.
-            curr_sim: _coo_matrix = curr_sim.tocoo()
-            curr_sim.eliminate_zeros()
+            curr_sim = curr_sim.multiply(propgation_mask)
             # including diagonals
-
-            mask = _np.zeros_like(curr_sim.data, dtype=bool)
-            for i in range(len(curr_sim.data)):
-                if (
-                    (curr_sim.row[i], curr_sim.col[i]) in query_pool_propagation
-                ) or (
-                    curr_sim.row[i] == curr_sim.col[i]  # self-loop
-                ):
-                    mask[i] = True
-
-            # Filter the data to keep only selected values
-            data_kept = curr_sim.data[mask]
-            curr_sim: _coo_matrix = _coo_matrix(
-                (data_kept, (curr_sim.row[mask], curr_sim.col[mask])),
-                shape=curr_sim.shape,
-            )
-            # Convert back
-            curr_sim: _csr_matrix = curr_sim.tocsr()
             # Re-normalize
-            curr_sim: _csr_matrix = _normalize_csr(curr_sim)
-        # prune
-        new_nodes: tuple[_1DArrayType, _1DArrayType] = _get_new_nodes(
+            curr_sim = _normalize_csr(curr_sim)
+        curr_sim.eliminate_zeros()
+
+        # --- Prune ---
+        if verbose:
+            _tqdm.write(f'Pruning..')
+            _tqdm.write(f'Computing delta nodes..')
+        new_rows, new_cols = _get_new_nodes(
             curr_sim,
             old_sim,
         )
-        # Build a map for ix_rows -> ix_nodes
-        map_row2node = dict()
-        for i_node, row in enumerate(new_nodes[0]):
-            if row not in map_row2node:
-                map_row2node[row] = [i_node]
+        if len(new_rows) == 0:
+            return curr_sim
+        # Only on newly added nodes
+        if verbose:
+            _tqdm.write(f'Preparing COO format..')
+        sim_coo = curr_sim.tocoo()
+
+        # Sort COO entries by row-col
+        sort_idx = _np.lexsort((sim_coo.col, sim_coo.row))
+        sim_coo.row = sim_coo.row[sort_idx]
+        sim_coo.col = sim_coo.col[sort_idx]
+        sim_coo.data = sim_coo.data[sort_idx]
+
+        # Get row boundaries (like CSR indptr for COO)
+        row_changes = _np.concatenate([
+            [_np.bool_(True)], 
+            sim_coo.row[1:] != sim_coo.row[:-1], 
+            [_np.bool_(True)]
+        ])
+        row_starts = _np.where(row_changes)[0][:-1]
+        row_ends = _np.where(row_changes)[0][1:] - 1
+        coo_unique_rows = sim_coo.row[row_starts]
+
+        # Create mapping from row to its position in row_starts
+        row_to_coo_idx = {row: i for i, row in enumerate(coo_unique_rows)}
+        
+        # Grouping new cols by row
+        new_unique_rows, inverse_idx, new_counts = _np.unique(
+            new_rows, return_inverse=True, return_counts=True
+        )
+        
+        # Optimized grouping using np.split
+        sort_idx = _np.argsort(inverse_idx)
+        new_cols_sorted = new_cols[sort_idx]
+        boundaries = _np.where(_np.diff(_np.concatenate([[-1], inverse_idx[sort_idx]])))[0]
+        new_cols_by_row = _np.split(new_cols_sorted, boundaries[1:])
+        
+        keep_mask = _np.ones(len(sim_coo.data), dtype=_np.bool_)
+       
+        if verbose:
+            _tqdm.write(f'Pruning per row..')
+            itor_ = enumerate(_tqdm(new_unique_rows))
+        else:
+            itor_ = enumerate(new_unique_rows)
+        for i, row in itor_:
+            if row not in row_to_coo_idx:
                 continue
-            map_row2node[row].append(i_node)
-        for row in map_row2node:
-            ix_nodes: list[int] = map_row2node[row]
-            new_cols = new_nodes[1][ix_nodes]
-            new_probs: _1DArrayType = _to_array(
-                curr_sim[row, new_cols],
-                squeeze=True,
-            )
-            new_probs = new_probs / new_probs.sum()
-            ix_sorted: _1DArrayType = _np.argsort(new_probs)[::-1]
-            probs_cum: _1DArrayType = _np.cumsum(new_probs[ix_sorted])
+            idx = row_to_coo_idx[row]
+            start = row_starts[idx]
+            end = row_ends[idx]
+            
+            row_cols = sim_coo.col[start:end+1]
+            row_data = sim_coo.data[start:end+1]
+            new_cols_row = new_cols_by_row[i]
+            col_in_both = _np.isin(row_cols, new_cols_row)
+            if not _np.any(col_in_both):
+                continue
+            new_probs = row_data[col_in_both]
+            prob_sum = _np.sum(new_probs)
+            if prob_sum == 0:
+                continue
+            
+            new_probs = new_probs / prob_sum
+            sorted_idx: _1DArrayType = _np.argsort(-new_probs)
+            probs_sorted = new_probs[sorted_idx]
+            probs_cum: _1DArrayType = _np.cumsum(probs_sorted)
             i_elbow_to_drop: int = 1
+
             if mode_prune == 'proportional':
-                for i, p in enumerate(probs_cum):
-                    if p >= cum_prob_keep:
-                        i_elbow_to_drop = i+1
-                        break
-            elif mode_prune == 'inflection_point':
+                i_elbow_to_drop = _np.searchsorted(
+                    a=probs_cum,
+                    v=cum_prob_keep,
+                    sorter=None,
+                ) + 1
+            else: # 'inflection_point'
                 if len(probs_cum) <= 1:
                     continue
                 delta_prob: _1DArrayType = probs_cum[1:] - probs_cum[:-1]
-                i_elbow_to_drop = _np.argmax(delta_prob)
-            if i_elbow_to_drop < new_cols.shape[0]:
-                curr_sim[row, new_cols[ix_sorted[max(i_elbow_to_drop, min_points_to_keep):]]] = 0.
-        curr_sim.eliminate_zeros()
-        return curr_sim
+                i_elbow_to_drop = _np.argmax(delta_prob) + 1
+            
+            keep_start = max(i_elbow_to_drop, min_points_to_keep)
+            if keep_start < len(sorted_idx):
+                # Get the actual column indices for new columns in this row
+                new_cols_in_row = row_cols[col_in_both]
+                
+                # Columns to zero are those beyond keep_start
+                cols_to_zero = new_cols_in_row[sorted_idx[keep_start:]]
+                
+                # Create mask for columns to zero in this row
+                zero_mask = _np.isin(row_cols, cols_to_zero)
+                
+                # Update global keep mask
+                keep_mask[start:end+1][zero_mask] = False
+        # Create new matrix from kept entries
+        if verbose:
+            _tqdm.write(f'Building final matrix..')
+        
+        return _csr_matrix(
+            (sim_coo.data[keep_mask], (sim_coo.row[keep_mask], sim_coo.col[keep_mask])),
+            shape=curr_sim.shape
+        )
     
     if skip_init_classification:
         if verbose:
@@ -591,11 +631,11 @@ def rw_aggregate(
         if mode_aggregation == "unweighted":
             X_agg_candidate: _csr_matrix = similarities[candidate_cellids, :].astype(
                 bool
-            ).astype(float) @ st_anndata.X.astype(float)
+            ).astype('float32') @ st_anndata.X.astype('float32')
         else:
             X_agg_candidate: _csr_matrix = similarities[
                 candidate_cellids, :
-            ] @ st_anndata.X.astype(float)
+            ] @ st_anndata.X.astype('float32')
         # Classify
         if verbose:
             _tqdm.write("Classifying..")
